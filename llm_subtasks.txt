@@ -1,0 +1,7 @@
+Move to a position directly above the corn.
+
+Descend vertically until the gripper is in position to grasp the corn.
+
+Close the gripper to securely grasp the corn.
+
+Ascend vertically to lift the corn from its current location.
