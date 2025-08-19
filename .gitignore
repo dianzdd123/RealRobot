@@ -1,1 +1,10 @@
-/.env
+.env
+checkpoints/
+test_imgs/
+__pycache__/
+utils/__pycache__/
+*.pyc
+*.pt
+*.txt
+*.png
+*.json
