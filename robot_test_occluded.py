@@ -8,15 +8,7 @@ from xarm.wrapper import XArmAPI
 from utils.API import subtasks_planner, trajectory_plan_on_real2
 from utils.camera_to_world import camera_to_world
 from utils.traj_execute import execute
-from occluded import (
-    check_occlusion,
-    build_occlusion_graph,
-    get_grasp_sequence,
-    compute_grasp_difficulty,
-    draw_mask_boundaries,
-    detect_ambiguity,
-    summarize_occlusion_graph,
-)
+from occluded import (check_occlusion, build_occlusion_graph, draw_mask_boundaries)
 
 # Import standard libraries
 import pyrealsense2 as rs

@@ -5,7 +5,6 @@ import cv2
 import os
 from typing import List, Tuple
 
-
 # from .rotate import extract_grasp_infos
 # from .rotate import simple_quaternion_from_angle
 

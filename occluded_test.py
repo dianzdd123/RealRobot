@@ -187,56 +187,56 @@ def draw_mask_boundaries(image, masks, color=(0, 255, 0), thickness=2, ids=None,
 if __name__ == "__main__":
     yolo_model_path = "checkpoints/best_yolo.pt"
     sam2_model_path = "checkpoints/sam2_b.pt"
-    path_base = "imgs/img_from_camera"
-    # path_base = "test_imgs/img8"
+    # path_base = "imgs/img_from_camera"
+    path_base = "test_imgs/img8"
     img_path = f"{path_base}.png"
     npz_path = f"{path_base}.npz"
 
     yolo_model = YOLO(yolo_model_path)
     class_names = yolo_model.names
     
-    pipeline = rs.pipeline()
-    config = rs.config()
-    config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
-    config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
-    pipeline.start(config)
+    # pipeline = rs.pipeline()
+    # config = rs.config()
+    # config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+    # config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
+    # pipeline.start(config)
 
-    align = rs.align(rs.stream.color)
-    # Warm up the camera
-    for _ in range(10):
-        frames = pipeline.wait_for_frames()
+    # align = rs.align(rs.stream.color)
+    # # Warm up the camera
+    # for _ in range(10):
+    #     frames = pipeline.wait_for_frames()
 
-    # Capture one aligned RGB-D frame
-    frames = pipeline.wait_for_frames()
+    # # Capture one aligned RGB-D frame
+    # frames = pipeline.wait_for_frames()
 
-    aligned_frames = align.process(frames)
-    color_frame = aligned_frames.get_color_frame()
-    depth_frame = aligned_frames.get_depth_frame()
-    if not color_frame or not depth_frame:
-        print("[ERROR] Failed to capture frames.")
-        exit(1)
-
-    # Convert frames to numpy arrays
-    color_image = np.asanyarray(color_frame.get_data())
-    depth_image = np.asanyarray(depth_frame.get_data())
-    # Save RGB and depth images
-    success = cv2.imwrite(img_path, color_image)
-    if not success:
-        print("[ERROR] RGB图像保存失败！")
-
-    np.savez_compressed(npz_path, color=color_image, depth=depth_image)
-    pipeline.stop()
-    
-    # data = np.load(npz_path)
-    # color_image = data["color"]
-    # depth_image = data["depth"]
-
-    # if not os.path.exists(img_path):
-    #     print(f"[ERROR] 图像路径不存在: {img_path}")
+    # aligned_frames = align.process(frames)
+    # color_frame = aligned_frames.get_color_frame()
+    # depth_frame = aligned_frames.get_depth_frame()
+    # if not color_frame or not depth_frame:
+    #     print("[ERROR] Failed to capture frames.")
     #     exit(1)
-    # color_image = cv2.imread(img_path)
-    # data = np.load(npz_path)
-    # depth_image = data["depth"]
+
+    # # Convert frames to numpy arrays
+    # color_image = np.asanyarray(color_frame.get_data())
+    # depth_image = np.asanyarray(depth_frame.get_data())
+    # # Save RGB and depth images
+    # success = cv2.imwrite(img_path, color_image)
+    # if not success:
+    #     print("[ERROR] RGB图像保存失败！")
+
+    # np.savez_compressed(npz_path, color=color_image, depth=depth_image)
+    # pipeline.stop()
+    
+    data = np.load(npz_path)
+    color_image = data["color"]
+    depth_image = data["depth"]
+
+    if not os.path.exists(img_path):
+        print(f"[ERROR] 图像路径不存在: {img_path}")
+        exit(1)
+    color_image = cv2.imread(img_path)
+    data = np.load(npz_path)
+    depth_image = data["depth"]
 
     # 目标检测
     image_rgb, boxes, yolo_centers, class_ids, yolo_output_path = detect_fruits(img_path, yolo_model_path)
