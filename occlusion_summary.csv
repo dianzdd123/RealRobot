@@ -1,0 +1,4 @@
+blocked,occluders_simple,occluders_with_type
+banana,banana 被 corn 遮挡,banana 被 [corn:靠近] 遮挡
+corn,corn 被 redpepper 遮挡,corn 被 [redpepper:靠近] 遮挡
+tomato,tomato 被 banana 遮挡,tomato 被 [banana:上层] 遮挡

@@ -1,322 +1,227 @@
-import numpy as np
 import cv2
-import os
-import pyrealsense2 as rs
-from ultralytics import YOLO
-from utils.yolo_utils import detect_fruits, merge_detections_by_depth_and_proximity
-from utils.sam2_utils import segment_with_sam2
-from utils.rotate import compute_affordance_mask
-from utils.rotate import draw_affordance_on_image
-from utils.rotate import infer_grasp_angle_and_width
+import numpy as np
+from utils.rotate import infer_grasp_angle_and_width, compute_affordance_mask
 
-def robust_center_depth(depth_image, cx, cy, win=5):
-    h, w = depth_image.shape
-    cx = int(round(cx)); cy = int(round(cy))
-    if not (0 <= cx < w and 0 <= cy < h):
+# ===================== 通用方案所需基础工具 =====================
+def union_masks_by_idx(masks, idxs):
+    """把一组 mask 合并成一个二值图"""
+    if not idxs: return None
+    H, W = masks[0].shape
+    u = np.zeros((H, W), np.uint8)
+    for k in idxs: u |= (masks[k] > 0).astype(np.uint8)
+    return u
+
+def keep_lcc(mask_u8):
+    """保留 mask 中的最大连通域（避免碎片影响）"""
+    if mask_u8 is None or mask_u8.sum() == 0: return np.zeros_like(mask_u8)
+    num, lab = cv2.connectedComponents((mask_u8 > 0).astype(np.uint8))
+    if num <= 1: return mask_u8
+    best, best_id = 0, 0
+    for i in range(1, num):
+        area = int((lab == i).sum())
+        if area > best: best, best_id = area, i
+    return ((lab == best_id).astype(np.uint8)) * 255
+
+# 用你的 PCA 函数包装成“从 mask 得姿态”
+def pose_from_mask(mask_u8, pixel_to_meter=None):
+    ys, xs = np.nonzero(mask_u8)
+    if xs.size == 0:
         return None
-    x0, x1 = max(cx - win, 0), min(cx + win + 1, w)
-    y0, y1 = max(cy - win, 0), min(cy + win + 1, h)
-    patch = depth_image[y0:y1, x0:x1].astype(np.uint16)
-    vals = patch[patch > 0]
-    if vals.size == 0:
-        return None
-    return int(np.median(vals))
+    mean = (float(xs.mean()), float(ys.mean()))
+    # 要像素宽度，传 pixel_to_meter=None
+    yaw, width_px, _, major, minor = infer_grasp_angle_and_width(mask_u8, draw_on=None, object_index=0, pixel_to_meter=(None if pixel_to_meter is None else pixel_to_meter))
+    return dict(center=mean, major=major, minor=minor, yaw=yaw, width_px=float(width_px))
 
-def check_depth_occlusion(depth_image, mask, center, all_masks, self_mask_index,
-                          class_ids, class_names, debug=False,
-                          depth_diff_threshold=10):
+# ===================== 类型化动作：切阴影 / 切重叠 / 削带 =====================
+def cut_shadow_for_top(j_mask, lower_union, expand_px=15, safety_px=3):
+    """处理混合遮挡：切掉上层 j 被下层入侵的阴影区域"""
+    if lower_union is None: return j_mask.copy()
+    k1 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2*expand_px+1, 2*expand_px+1))
+    k2 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2*safety_px+1, 2*safety_px+1))
+    shadow = cv2.dilate((lower_union > 0).astype(np.uint8), k1, 1)
+    shadow = cv2.dilate(shadow, k2, 1)
+    cut = cv2.bitwise_and((j_mask > 0).astype(np.uint8), cv2.bitwise_not(shadow))
+    return keep_lcc(cut)
+
+def cut_overlap_for_mutual(me_mask, neigh_union, expand_px=15, safety_px=3):
+    """处理互相靠近遮挡：切掉自己与邻居的重叠区域"""
+    if neigh_union is None: return me_mask.copy()
+    k1 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2*expand_px+1, 2*expand_px+1))
+    k2 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2*safety_px+1, 2*safety_px+1))
+    me_dil   = cv2.dilate((me_mask > 0).astype(np.uint8), k1, 1)
+    neigh_dil= cv2.dilate((neigh_union > 0).astype(np.uint8), k1, 1)
+    overlap  = cv2.bitwise_and(me_dil, neigh_dil)
+    if overlap.sum() == 0: return me_mask.copy()
+    band = cv2.dilate(overlap, k2, 1)
+    cut = cv2.bitwise_and((me_mask > 0).astype(np.uint8), cv2.bitwise_not(band))
+    return keep_lcc(cut)
+
+def carve_victim_side(victim_mask, victim_center_xy, minor_axis, clearance_px):
+    """处理单向靠近遮挡：沿副轴方向切掉入侵侧的一条带（近侧）"""
+    obj = (victim_mask > 0).astype(np.uint8)
+    ys, xs = np.nonzero(obj)
+    if xs.size == 0: return victim_mask.copy()
+    pts = np.stack([xs, ys], 1).astype(np.float32)
+    rel = pts - np.array(victim_center_xy, np.float32)
+    proj = rel @ minor_axis.astype(np.float32)
+    keep = np.abs(proj) > float(clearance_px)
+    cut = np.zeros_like(obj)
+    kept = pts[keep].astype(np.int32)
+    if kept.size: cut[kept[:,1], kept[:,0]] = 255
+    return keep_lcc(cut)
+
+# ===================== 主入口：生成安全抓取区域 =====================
+def make_safe_region_for_object(
+    idx, masks, prox, above,
+    compute_affordance_mask,             # 直接传入你已有的函数
+    expand_px=15, safety_px=3, min_area_px=200,
+    orig_pose=None, pixel_to_meter=None
+):
     """
-    判断当前物体 mask 是否被其他物体遮挡（深度遮挡判断）
+    返回: dict{mask, pose, aff_mask, reason, ok}
+    prox[i][j]=True 表示 i 侵入 j 的可供性；above[i][j]=True 表示 i 在 j 上方
     """
-    h, w = depth_image.shape
-    x, y = center
-    if not (0 <= x < w and 0 <= y < h):
-        return False, None
+    me = masks[idx]
+    N = len(masks)
 
-    center_depth = robust_center_depth(depth_image, x, y, win=5)
-    if center_depth is None:
-        return False, None
+    # A. 混合遮挡：有 k 满足 prox[k][idx] 且 above[idx][k]
+    invaders_below = [k for k in range(N) if prox[k][idx] and above[idx][k]]
+    if invaders_below:
+        lower_u = union_masks_by_idx(masks, invaders_below)
+        cut = cut_shadow_for_top(me, lower_u, expand_px, safety_px)
+        if int(cut.sum()) >= min_area_px:
+            pose = pose_from_mask(cut, pixel_to_meter=None)
+            aff  = compute_affordance_mask(
+                mask=cut, major_axis=pose['major'], minor_axis=pose['minor'],
+                mean=np.array(pose['center'], np.float32),
+                center_ratio=0.4, expand_pixels=expand_px
+            )
+            return dict(mask=cut, pose=pose, aff_mask=aff, reason="mixed", ok=True)
 
-    # 提取当前物体边界点
-    contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not contours or len(contours[0]) == 0:
-        return False, None
+    # B. 互相靠近遮挡：存在 S 使 prox[idx][s] & prox[s][idx]
+    mutual_neigh = [j for j in range(N) if prox[idx][j] and prox[j][idx]]
+    if mutual_neigh:
+        neigh_u = union_masks_by_idx(masks, mutual_neigh)
+        cut = cut_overlap_for_mutual(me, neigh_u, expand_px, safety_px)
+        if int(cut.sum()) >= min_area_px:
+            pose = pose_from_mask(cut, pixel_to_meter=None)
+            aff  = compute_affordance_mask(
+                mask=cut, major_axis=pose['major'], minor_axis=pose['minor'],
+                mean=np.array(pose['center'], np.float32),
+                center_ratio=0.4, expand_pixels=expand_px
+            )
+            return dict(mask=cut, pose=pose, aff_mask=aff, reason="mutual_proximity", ok=True)
 
-    boundary_points = contours[0][:, 0, :]  # (N, 2)
+    # C. 单向靠近（我被别人侵入）
+    invaders = [k for k in range(N) if prox[k][idx]]
+    if invaders and orig_pose is not None:
+        cut = carve_victim_side(me, orig_pose['center'], orig_pose['minor'], clearance_px=expand_px+safety_px)
+        if int(cut.sum()) >= min_area_px:
+            pose = pose_from_mask(cut, pixel_to_meter=None)
+            aff  = compute_affordance_mask(
+                mask=cut, major_axis=pose['major'], minor_axis=pose['minor'],
+                mean=np.array(pose['center'], np.float32),
+                center_ratio=0.4, expand_pixels=expand_px
+            )
+            return dict(mask=cut, pose=pose, aff_mask=aff, reason="oneway_proximity", ok=True)
 
-    for pt in boundary_points:
-        px, py = pt
-        if not (0 <= px < w and 0 <= py < h):
-            continue
+    # D. 无需处理或处理失败：保持原 mask/pose
+    pose = orig_pose if orig_pose is not None else pose_from_mask(me, pixel_to_meter=None)
+    aff  = compute_affordance_mask(
+        mask=me, major_axis=pose['major'], minor_axis=pose['minor'],
+        mean=np.array(pose['center'], np.float32),
+        center_ratio=0.4, expand_pixels=expand_px
+    )
+    return dict(mask=me.copy(), pose=pose, aff_mask=aff, reason="unchanged", ok=True)
 
-        # 检查该边界点是否与其他物体 mask 重叠
-        for j, other_mask in enumerate(all_masks):
-            if j == self_mask_index:
-                continue
+# ===================== 测试主函数 =====================
+def main_test():
+    """
+    目的：构造三个合成物体（椭圆）与三种遮挡关系，跑通“安全区域 + 姿态 + affordance”全流程。
+    你也可以把这里替换成真实的 masks、prox、above 矩阵。
+    """
+    H, W = 360, 480
+    masks = [np.zeros((H,W), np.uint8) for _ in range(3)]
 
-            if other_mask[py, px] > 0:  # 重叠了
-                bd = robust_center_depth(depth_image, px, py, win=3)
-                if bd is None:
-                    continue
-                depth_diff = center_depth - bd
-                if depth_diff > depth_diff_threshold:
-                    if debug:
-                        name_i = class_names[class_ids[self_mask_index]]
-                        name_j = class_names[class_ids[j]]
-                        print(f"[Depth Occlusion] Object {self_mask_index} ({name_i}) is occluded by object {j} ({name_j})")
-                        print(f" - Boundary point: ({px}, {py}), center depth: {center_depth}, boundary depth: {bd}, Δ={depth_diff:.1f}")
-                    return True, ((x, y), (px, py))
+    # 造三个椭圆：0=corn(细长), 1=potato(圆胖), 2=banana(偏细)
+    cv2.ellipse(masks[0], (180,180), (70,25), 20, 0, 360, 255, -1)  # corn
+    cv2.ellipse(masks[1], (240,190), (40,40), 0, 0, 360, 255, -1)   # potato
+    cv2.ellipse(masks[2], (300,200), (60,20), -10, 0, 360, 255, -1) # banana
 
-    if debug:
-        name_i = class_names[class_ids[self_mask_index]]
-        print(f"[Depth Check] Object {self_mask_index} ({name_i}) → no depth occlusion found.")
+    # 构造 prox / above 关系（示例）：
+    # prox[i][j]：i 侵入 j 的可供性；above[i][j]：i 在 j 上方
+    N = len(masks)
+    prox  = [[False]*N for _ in range(N)]
+    above = [[False]*N for _ in range(N)]
 
-    return False, None
+    # 示例1：0 和 1 互相靠近；1 和 2 互相靠近；0 对 1 是深度上方（混合：0 prox→1 且 0 above 1）
+    prox[0][1] = True; prox[1][0] = True
+    prox[1][2] = True; prox[2][1] = True
+    prox[0][1] = True  # 让 0 对 1 既靠近又上层 → 混合遮挡案例
+    above[0][1] = True # 0 在 1 上方
 
-def check_occlusion(depth_image, mask, affordance_mask, center,
-                    all_masks=None, all_affordance_masks=None,
-                    pixel_gap=5, depth_diff_threshold=10, debug=False,
-                    class_ids=None, class_names=None, self_idx=None):
-    x, y = center
-    h, w = depth_image.shape
-    if not (0 <= x < w and 0 <= y < h):
-        return False, None
+    # 你的 compute_affordance_mask（引入你已有的实现）
+    def compute_affordance_mask(mask, major_axis, minor_axis, mean, center_ratio=0.4, expand_pixels=15):
+        # 这里直接复用你项目里的实现；此处写一个非常简化版以便可运行
+        h, w = mask.shape
+        aff = np.zeros_like(mask, np.uint8)
+        ys, xs = np.nonzero(mask)
+        if xs.size == 0: return aff
+        pts = np.stack([xs, ys], 1).astype(np.float32)
+        rel = pts - mean
+        proj_major = rel @ major_axis
+        proj_minor = rel @ minor_axis
+        # 主轴中间段
+        proj_min, proj_max = proj_major.min(), proj_major.max()
+        half = (proj_max - proj_min) * center_ratio / 2.0
+        center = 0.5*(proj_max + proj_min)
+        mid_mask = (proj_major >= center - half) & (proj_major <= center + half)
+        # 副轴固定扩张
+        band_mask = np.abs(proj_minor) <= float(expand_pixels)
+        keep = mid_mask & band_mask
+        sel = pts[keep].astype(np.int32)
+        aff[sel[:,1], sel[:,0]] = 255
+        # 小膨胀连通
+        aff = cv2.dilate(aff, np.ones((5,5), np.uint8), 1)
+        return aff
 
-    center_depth = robust_center_depth(depth_image, x, y, win=5)
-    if center_depth is None:
-        return False, None
+    # 先计算每个物体的原始姿态（供“单向靠近”时削带用）
+    orig_poses = [pose_from_mask(m) for m in masks]
 
-    # === 1. 深度遮挡判断 ===
-    contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if contours:
-        boundary_points = contours[0][:, 0, :]
-        win = 2  
-        for pt in boundary_points:
-            px, py = pt
-            if not (0 <= px < w and 0 <= py < h):
-                continue
-            bd = robust_center_depth(depth_image, px, py, win=3)
-            if bd is None:
-                continue
-            depth_diff = center_depth - bd
-            if depth_diff > depth_diff_threshold:
-                # 扩大邻域判断是否被其他物体覆盖
-                for j, other_mask in enumerate(all_masks):
-                    if np.array_equal(other_mask, mask):
-                        continue
-                    for dx in range(-win, win + 1):
-                        for dy in range(-win, win + 1):
-                            nx, ny = px + dx, py + dy
-                            if 0 <= nx < w and 0 <= ny < h:
-                                if other_mask[ny, nx] > 0:
-                                    if debug:
-                                        name_i = class_names[class_ids[self_idx]]
-                                        name_j = class_names[class_ids[j]]
-                                        print(f"[Depth Occlusion] Object {self_idx} ({name_i}) is occluded by object {j} ({name_j})")
-                                        print(f" - Center depth: {center_depth}, Boundary depth: {bd}, Δ={depth_diff:.1f}")
-                                    return True, ((x, y), (px, py))
-        if debug:
-            name_i = class_names[class_ids[self_idx]]
-            print(f"[Depth Check] Object {self_idx} ({name_i}) → no boundary occlusion detected.")
+    results = []
+    for idx in range(N):
+        out = make_safe_region_for_object(
+            idx=idx,
+            masks=masks,
+            prox=prox,
+            above=above,
+            compute_affordance_mask=compute_affordance_mask,
+            expand_px=15, safety_px=3, min_area_px=200,
+            orig_pose=orig_poses[idx],
+            pixel_to_meter=None
+        )
+        pose = out['pose']
+        results.append(dict(
+            idx=idx, reason=out['reason'],
+            center=(round(pose['center'][0],1), round(pose['center'][1],1)),
+            yaw=round(pose['yaw'],1),
+            width_px=round(pose['width_px'],1),
+            safe_area=int(out['mask'].sum())
+        ))
 
-    # === 2. 靠近遮挡判断（基于实际重叠区域 + 深度）===
-    if all_masks and all_affordance_masks:
-        aff_mask_bin = affordance_mask.astype(np.uint8)
+    print("=== Pipeline Results ===")
+    for r in results:
+        print(f"[obj {r['idx']}] reason={r['reason']}, center={r['center']}, yaw={r['yaw']}°, width={r['width_px']}px, safe_area={r['safe_area']}")
 
-        for j, (other_mask, _) in enumerate(zip(all_masks, all_affordance_masks)):
-            if np.array_equal(other_mask, mask):
-                continue
+    vis = np.zeros((H, W, 3), np.uint8)
+    colors = [(0,255,0),(255,0,0),(0,0,255)]
+    for idx, r in enumerate(results):
+        mask = r['mask'] if 'mask' in r else masks[idx]
+        color = colors[idx % len(colors)]
+        vis[mask > 0] = color
+    cv2.imshow("safe regions", vis)
+    cv2.waitKey(0)
 
-            # 计算交集区域
-            overlap = cv2.bitwise_and(aff_mask_bin, other_mask.astype(np.uint8))
-            overlap_area = np.sum(overlap > 0)
-
-            if overlap_area > 0:  # 阈值防止误判
-                aff_coords = np.column_stack(np.nonzero(aff_mask_bin))
-                other_coords = np.column_stack(np.nonzero(other_mask))
-
-                if aff_coords.size == 0 or other_coords.size == 0:
-                    continue
-
-                aff_depths = [robust_center_depth(depth_image, x, y, win=3) for y, x in aff_coords]
-                other_depths = [robust_center_depth(depth_image, x, y, win=3) for y, x in other_coords]
-
-                aff_depths = [d for d in aff_depths if d is not None]
-                other_depths = [d for d in other_depths if d is not None]
-
-                if not aff_depths or not other_depths:
-                    continue
-
-                min_aff = np.percentile(aff_depths, 30)
-                min_other = np.percentile(other_depths, 30)
-
-                if min_other <= min_aff + 10:
-                    if debug:
-                        name_i = class_names[class_ids[self_idx]]
-                        name_j = class_names[class_ids[j]]
-                        print(f"[Proximity Occlusion] Object {self_idx} ({name_i}) is occluded by object {j} ({name_j})")
-                        print(f" - Overlap area: {overlap_area}, d_aff≈{min_aff:.1f}, d_other≈{min_other:.1f}")
-                    return True, None
-
-        if debug:
-            name_i = class_names[class_ids[self_idx]]
-            print(f"[Proximity Check] Object {self_idx} ({name_i}) → no overlap occlusion detected.")
-
-    return False, None
-
-def draw_mask_boundaries(image, masks, color=(0, 255, 0), thickness=2, ids=None, line_pairs=None):
-        vis_image = image.copy()
-        for idx, mask in enumerate(masks):
-            contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            if not contours:
-                continue
-            cv2.drawContours(vis_image, contours, -1, color, thickness)
-            if ids is not None:
-                M = cv2.moments(contours[0])
-                if M['m00'] != 0:
-                    cx = int(M['m10'] / M['m00'])
-                    cy = int(M['m01'] / M['m00'])
-                    cv2.putText(vis_image, str(ids[idx]), (cx, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-
-        # 添加红色连接线
-        if line_pairs:
-            for pt1, pt2 in line_pairs:
-                cv2.line(vis_image, pt1, pt2, (0, 0, 255), 2)
-        return vis_image
 
 if __name__ == "__main__":
-    yolo_model_path = "checkpoints/best_yolo.pt"
-    sam2_model_path = "checkpoints/sam2_b.pt"
-    # path_base = "imgs/img_from_camera"
-    path_base = "test_imgs/img8"
-    img_path = f"{path_base}.png"
-    npz_path = f"{path_base}.npz"
-
-    yolo_model = YOLO(yolo_model_path)
-    class_names = yolo_model.names
-    
-    # pipeline = rs.pipeline()
-    # config = rs.config()
-    # config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
-    # config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
-    # pipeline.start(config)
-
-    # align = rs.align(rs.stream.color)
-    # # Warm up the camera
-    # for _ in range(10):
-    #     frames = pipeline.wait_for_frames()
-
-    # # Capture one aligned RGB-D frame
-    # frames = pipeline.wait_for_frames()
-
-    # aligned_frames = align.process(frames)
-    # color_frame = aligned_frames.get_color_frame()
-    # depth_frame = aligned_frames.get_depth_frame()
-    # if not color_frame or not depth_frame:
-    #     print("[ERROR] Failed to capture frames.")
-    #     exit(1)
-
-    # # Convert frames to numpy arrays
-    # color_image = np.asanyarray(color_frame.get_data())
-    # depth_image = np.asanyarray(depth_frame.get_data())
-    # # Save RGB and depth images
-    # success = cv2.imwrite(img_path, color_image)
-    # if not success:
-    #     print("[ERROR] RGB图像保存失败！")
-
-    # np.savez_compressed(npz_path, color=color_image, depth=depth_image)
-    # pipeline.stop()
-    
-    data = np.load(npz_path)
-    color_image = data["color"]
-    depth_image = data["depth"]
-
-    if not os.path.exists(img_path):
-        print(f"[ERROR] 图像路径不存在: {img_path}")
-        exit(1)
-    color_image = cv2.imread(img_path)
-    data = np.load(npz_path)
-    depth_image = data["depth"]
-
-    # 目标检测
-    image_rgb, boxes, yolo_centers, class_ids, yolo_output_path = detect_fruits(img_path, yolo_model_path)
-    mboxes, mclass_ids, mcenters, groups = merge_detections_by_depth_and_proximity(
-        boxes=boxes,
-        class_ids=class_ids,
-        centers_xy=yolo_centers,                 # 使用 YOLO 返回的中心
-        depth_image=depth_image.astype(np.uint16),
-        pixel_dist_thresh=60,
-        depth_diff_thresh=20,
-        same_class_only=True,
-        win=3
-    )
-    
-    # SAM 分割
-    masks, sam_centers, result_path = segment_with_sam2(
-        image_rgb=image_rgb,
-        boxes=mboxes,
-        sam_model_path=sam2_model_path,
-        input_image_path=img_path
-    )
-    # 计算获得 affordance area
-    image_with_aff = image_rgb.copy()
-    affordance_masks = []
-    for i, m in enumerate(masks):
-        # 得到主副轴和质心
-        grasp_angle, width, _, major_axis, minor_axis = infer_grasp_angle_and_width(m, draw_on=image_rgb, object_index=i)
-
-        mean = np.array(sam_centers[i], dtype=np.float32)
-        # 基于主副轴和质心生成 affordance mask（相对原宽度固定像素外扩）
-        aff_mask = compute_affordance_mask(
-            mask=m,
-            major_axis=major_axis,
-            minor_axis=minor_axis,
-            mean=mean,
-            center_ratio=0.3,
-            expand_pixels=20
-        )
-
-        affordance_masks.append(aff_mask)
-        # 绘制叠加
-        image_with_aff = draw_affordance_on_image(image_with_aff, aff_mask, color=(0, 255, 0), alpha=0.4)
-    # 保存叠加可视化结果
-    cv2.imwrite("output_affordance_overlay.png", cv2.cvtColor(image_with_aff, cv2.COLOR_RGB2BGR))
-
-    # 遮挡检测
-    occlusion_line_pairs = []
-    for idx, mask in enumerate(masks):
-        class_id = class_ids[idx]
-        class_name = class_names.get(class_id, f"class_{class_id}")
-        center = sam_centers[idx]
-
-        is_occluded, contact_pair = check_occlusion(
-            depth_image=depth_image,
-            mask=mask,
-            affordance_mask=affordance_masks[idx],
-            center=center,
-            all_masks=masks,
-            all_affordance_masks=affordance_masks,
-            pixel_gap=5,
-            debug=True,
-            class_ids=class_ids,
-            class_names=class_names,
-            self_idx=idx
-        )
-        is_occluded, contact = check_depth_occlusion(
-            depth_image=depth_image,
-            mask=mask,
-            center=center,
-            all_masks=masks,
-            self_mask_index=idx,
-            class_ids=class_ids,
-            class_names=class_names,
-            debug=True
-        )
-
-    vis_img = draw_mask_boundaries(
-        image_rgb,
-        masks,
-        ids=list(range(len(masks))),
-        line_pairs=occlusion_line_pairs
-    )
-    cv2.imwrite("imgs/occluded.png", vis_img)
+    main_test()

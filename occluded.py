@@ -22,16 +22,61 @@ def robust_center_depth(depth_image, cx, cy, win=5):
         return None
     return int(np.median(vals))
 
-def check_occlusion(depth_image, mask, affordance_mask, center, all_masks=None, all_affordance_masks=None, pixel_gap=5, debug=False):
-    """
-    遮挡判断逻辑（更新版）：
-    1）深度遮挡：边界深度 < 中心深度（中心被遮）
-    2）靠近遮挡：其他物体靠近当前aff区域 且 深度比当前小或相近（才算遮挡）
+# def check_depth_occlusion(depth_image, mask, center, all_masks, self_mask_index,
+#                           class_ids, class_names, debug=False,
+#                           depth_diff_threshold=10):
+#     """
+#     判断当前物体 mask 是否被其他物体遮挡（深度遮挡判断）
+#     """
+#     h, w = depth_image.shape
+#     x, y = center
+#     if not (0 <= x < w and 0 <= y < h):
+#         return False, None
 
-    返回:
-        is_occluded: True / False
-        contact_pair: (pt1, pt2) if valid
-    """
+#     center_depth = robust_center_depth(depth_image, x, y, win=5)
+#     if center_depth is None:
+#         return False, None
+
+#     # 提取当前物体边界点
+#     contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+#     if not contours or len(contours[0]) == 0:
+#         return False, None
+
+#     boundary_points = contours[0][:, 0, :]  # (N, 2)
+
+#     for pt in boundary_points:
+#         px, py = pt
+#         if not (0 <= px < w and 0 <= py < h):
+#             continue
+
+#         # 检查该边界点是否与其他物体 mask 重叠
+#         for j, other_mask in enumerate(all_masks):
+#             if j == self_mask_index:
+#                 continue
+
+#             if other_mask[py, px] > 0:  # 重叠了
+#                 bd = robust_center_depth(depth_image, px, py, win=3)
+#                 if bd is None:
+#                     continue
+#                 depth_diff = center_depth - bd
+#                 if depth_diff > depth_diff_threshold:
+#                     if debug:
+#                         name_i = class_names[class_ids[self_mask_index]]
+#                         name_j = class_names[class_ids[j]]
+#                         print(f"[Depth Occlusion] Object {self_mask_index} ({name_i}) is occluded by object {j} ({name_j})")
+#                         print(f" - Boundary point: ({px}, {py}), center depth: {center_depth}, boundary depth: {bd}, Δ={depth_diff:.1f}")
+#                     return True, ((x, y), (px, py))
+
+#     if debug:
+#         name_i = class_names[class_ids[self_mask_index]]
+#         print(f"[Depth Check] Object {self_mask_index} ({name_i}) → no depth occlusion found.")
+
+#     return False, None
+
+def check_occlusion(depth_image, mask, affordance_mask, center,
+                    all_masks=None, all_affordance_masks=None,
+                    pixel_gap=5, depth_diff_threshold=10, debug=False,
+                    class_ids=None, class_names=None, self_idx=None):
     x, y = center
     h, w = depth_image.shape
     if not (0 <= x < w and 0 <= y < h):
@@ -41,251 +86,151 @@ def check_occlusion(depth_image, mask, affordance_mask, center, all_masks=None, 
     if center_depth is None:
         return False, None
 
-    # === 1) 深度遮挡判断 ===
+    # === 1. 深度遮挡判断 ===
     contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not contours or len(contours[0]) == 0:
-        return False, None
-    boundary_points = contours[0][:, 0, :]
-
-    boundary_depths = [robust_center_depth(depth_image, pt[0], pt[1], win=3)
-                       for pt in boundary_points if 0 <= pt[0] < w and 0 <= pt[1] < h]
-    boundary_depths = [d for d in boundary_depths if d is not None]
-
-    if boundary_depths:
-        min_boundary_depth = np.min(boundary_depths)
-        depth_diff_threshold = 10  # mm
-        if center_depth - min_boundary_depth > depth_diff_threshold:
-            if debug:
-                print(f"[遮挡-深度] 中心: {center_depth}, 边界最小: {min_boundary_depth}, 差: {center_depth - min_boundary_depth}")
-            return True, None
-
-    # === 2) 靠近遮挡判断（aff vs 他物边界） ===
-    if all_masks and all_affordance_masks:
-        aff_contours, _ = cv2.findContours(affordance_mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if not aff_contours:
-            return False, None
-        aff_boundary = aff_contours[0][:, 0, :]  # (N, 2)
-
-        for other_mask, other_aff in zip(all_masks, all_affordance_masks):
-            if np.array_equal(other_mask, mask):
-                continue  # 跳过自己
-
-            other_contours, _ = cv2.findContours(other_mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            if not other_contours:
+    if contours:
+        boundary_points = contours[0][:, 0, :]
+        win = 2  
+        for pt in boundary_points:
+            px, py = pt
+            if not (0 <= px < w and 0 <= py < h):
                 continue
-            other_boundary = other_contours[0][:, 0, :]
+            bd = robust_center_depth(depth_image, px, py, win=3)
+            if bd is None:
+                continue
+            depth_diff = center_depth - bd
+            if depth_diff > depth_diff_threshold:
+                # 扩大邻域判断是否被其他物体覆盖
+                for j, other_mask in enumerate(all_masks):
+                    if np.array_equal(other_mask, mask):
+                        continue
+                    for dx in range(-win, win + 1):
+                        for dy in range(-win, win + 1):
+                            nx, ny = px + dx, py + dy
+                            if 0 <= nx < w and 0 <= ny < h:
+                                if other_mask[ny, nx] > 0:
+                                    if debug:
+                                        name_i = class_names[class_ids[self_idx]]
+                                        name_j = class_names[class_ids[j]]
+                                        print(f"[Depth Occlusion] Object {self_idx} ({name_i}) is occluded by object {j} ({name_j})")
+                                        # print(f" - Center depth: {center_depth}, Boundary depth: {bd}, Δ={depth_diff:.1f}")
+                                    return True, ((x, y), (px, py))
+        if debug:
+            name_i = class_names[class_ids[self_idx]]
+            # print(f"[Depth Check] Object {self_idx} ({name_i}) → no boundary occlusion detected.")
 
-            dists = np.linalg.norm(aff_boundary[:, None, :] - other_boundary[None, :, :], axis=2)
-            min_dist = np.min(dists)
-            min_pos = np.unravel_index(np.argmin(dists), dists.shape)
+    # === 2. 靠近遮挡判断（基于实际重叠区域 + 深度）===
+    if all_masks and all_affordance_masks:
+        aff_mask_bin = affordance_mask.astype(np.uint8)
 
-            if min_dist < pixel_gap:
-                # pt1 = tuple(aff_boundary[min_pos[0]])     # 我的抓取区域边界
-                # pt2 = tuple(other_boundary[min_pos[1]])   # 对方边界
-                # d_aff = robust_center_depth(depth_image, pt1[0], pt1[1], win=3)
-                # d_other = robust_center_depth(depth_image, pt2[0], pt2[1], win=3)
+        for j, (other_mask, _) in enumerate(zip(all_masks, all_affordance_masks)):
+            if np.array_equal(other_mask, mask):
+                continue
 
-                # if d_aff is None or d_other is None:
-                #     continue
+            # 计算交集区域
+            overlap = cv2.bitwise_and(aff_mask_bin, other_mask.astype(np.uint8))
+            overlap_area = np.sum(overlap > 0)
 
-                # depth_margin = 0  # mm 容忍范围（同一平面也算遮挡）
-                # if d_aff < d_other - depth_margin:
-                #     if debug:
-                #         print(f"[无遮挡] 当前:{d_aff} 在前，对方:{d_other} 更远 → 不遮挡")
-                #     return False, None
-                # else:
-                #     if debug:
-                #         print(f"[靠近遮挡] 当前:{d_aff} 不明显在前，对方:{d_other} 靠近或在前 → 遮挡成立")
-                #     return True, (pt1, pt2)
-                return True
+            if overlap_area > 0:  # 阈值防止误判
+                aff_coords = np.column_stack(np.nonzero(aff_mask_bin))
+                other_coords = np.column_stack(np.nonzero(other_mask))
+
+                if aff_coords.size == 0 or other_coords.size == 0:
+                    continue
+
+                aff_depths = [robust_center_depth(depth_image, x, y, win=3) for y, x in aff_coords]
+                other_depths = [robust_center_depth(depth_image, x, y, win=3) for y, x in other_coords]
+
+                aff_depths = [d for d in aff_depths if d is not None]
+                other_depths = [d for d in other_depths if d is not None]
+
+                if not aff_depths or not other_depths:
+                    continue
+
+                min_aff = np.percentile(aff_depths, 30)
+                min_other = np.percentile(other_depths, 30)
+
+                if min_other <= min_aff + 10:
+                    if debug:
+                        name_i = class_names[class_ids[self_idx]]
+                        name_j = class_names[class_ids[j]]
+                        print(f"[Proximity Occlusion] Object {self_idx} ({name_i}) is occluded by object {j} ({name_j})")
+                        # print(f" - Overlap area: {overlap_area}, d_aff≈{min_aff:.1f}, d_other≈{min_other:.1f}")
+                    return True, None
+
+        if debug:
+            name_i = class_names[class_ids[self_idx]]
+            # print(f"[Proximity Check] Object {self_idx} ({name_i}) → no overlap occlusion detected.")
 
     return False, None
 
-def build_occlusion_graph(masks, depth_image, sam_centers, class_ids,
-                          affordance_masks=None, pixel_gap=20, debug=False):
-    """
-    构建遮挡图，基于 check_occlusion 判断是否被遮挡。
-    返回 occlusion_graph 和 遮挡边 contact_pair。
-    """
-    occlusion_graph = {i: [] for i in range(len(masks))}
-    occlusion_edges = []
-
-    for i in range(len(masks)):
-        mask = masks[i]
-        center = sam_centers[i]
-        aff_mask = affordance_masks[i] if affordance_masks else None
-
-        is_occluded, contact_pair = check_occlusion(
-            depth_image=depth_image,
-            mask=mask,
-            affordance_mask=aff_mask,
-            center=center,
-            all_masks=masks,
-            all_affordance_masks=affordance_masks,
-            pixel_gap=pixel_gap,
-            debug=debug
-        )
-
-        if is_occluded and contact_pair is not None:
-            pt_other = contact_pair[1]  # 是谁遮挡了我
-
-            for j, other_mask in enumerate(masks):
-                if j == i:
-                    continue
-                if 0 <= pt_other[0] < depth_image.shape[1] and 0 <= pt_other[1] < depth_image.shape[0]:
-                    if other_mask[pt_other[1], pt_other[0]] > 0:
-                        occlusion_graph[i].append(j)
-                        dist = np.linalg.norm(np.array(contact_pair[0]) - np.array(contact_pair[1]))
-                        occlusion_edges.append(((i, j), dist))
-                        if debug:
-                            print(f"[图构建] 物体 {i} 被 {j} 遮挡，最近距离: {dist:.1f}px")
-                        break
-
-    return occlusion_graph, occlusion_edges
-
-def get_grasp_sequence(graph):
-    visited = set()
-    visiting = set()  # 当前路径上的节点，用于检测循环
-    sequence = []
-    has_cycle = False
-
-    def dfs(node):
-        nonlocal has_cycle
-        if node in visited:
-            return
-        if node in visiting:
-            has_cycle = True
-            print(f"[警告] 检测到图中存在环路，节点 {node} 在路径中重复访问")
-            return
-        visiting.add(node)
-        for neighbor in graph.get(node, []):
-            dfs(neighbor)
-        visiting.remove(node)
-        visited.add(node)
-        sequence.append(node)
-
-    for node in graph:
-        dfs(node)
-
-    if has_cycle:
-        print("[警告] 遮挡图存在有向环，抓取顺序可能不准确")
-
-    return sequence[::-1]
-
-def compute_grasp_difficulty(graph):
-    def dfs_depth(node, visited):
-        if node in visited:
-            return 0  # 避免循环导致爆栈
-        visited.add(node)
-        if not graph.get(node):
-            return 0
-        max_child_depth = 0
-        for n in graph[node]:
-            max_child_depth = max(max_child_depth, dfs_depth(n, visited.copy()))
-        return 1 + max_child_depth
-
-    difficulty_map = {}
-    for node in graph:
-        depth = dfs_depth(node, set())
-        if depth == 0:
-            difficulty = "Easy"
-        elif depth == 1:
-            difficulty = "Medium"
-        else:
-            difficulty = "Hard"
-        difficulty_map[node] = difficulty
-
-    return difficulty_map
-
-def detect_ambiguity(class_ids):
-    from collections import Counter
-    counts = Counter(class_ids)
-    return any(v > 1 for v in counts.values())
-
-def summarize_occlusion_graph(occlusion_graph, class_ids, class_names):
-    print("\n=== 遮挡图分析结果 ===")
-    difficulty_map = compute_grasp_difficulty(occlusion_graph)
-    sequence = get_grasp_sequence(occlusion_graph)
-    ambiguous = detect_ambiguity(class_ids)
-
-    for i in range(len(class_ids)):
-        blockers = occlusion_graph.get(i, [])
-        blocker_names = [class_names[class_ids[j]] for j in blockers]
-        print(f"物体 {i} ({class_names[class_ids[i]]}) 被遮挡者: {blocker_names if blocker_names else '无遮挡'}，难度: {difficulty_map[i]}")
-
-    print("\n抓取执行顺序（优先抓取遮挡层最深的物体）:")
-    for idx in sequence:
-        print(f" -> 物体 {idx} ({class_names[class_ids[idx]]})")
-
-    print(f"\n场景中是否存在歧义物体（相同类别多个实例）: {'是' if ambiguous else '否'}")
-
 def draw_mask_boundaries(image, masks, color=(0, 255, 0), thickness=2, ids=None, line_pairs=None):
-    vis_image = image.copy()
-    for idx, mask in enumerate(masks):
-        contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if not contours:
-            continue
-        cv2.drawContours(vis_image, contours, -1, color, thickness)
-        if ids is not None:
-            M = cv2.moments(contours[0])
-            if M['m00'] != 0:
-                cx = int(M['m10'] / M['m00'])
-                cy = int(M['m01'] / M['m00'])
-                cv2.putText(vis_image, str(ids[idx]), (cx, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+        vis_image = image.copy()
+        for idx, mask in enumerate(masks):
+            contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if not contours:
+                continue
+            cv2.drawContours(vis_image, contours, -1, color, thickness)
+            if ids is not None:
+                M = cv2.moments(contours[0])
+                if M['m00'] != 0:
+                    cx = int(M['m10'] / M['m00'])
+                    cy = int(M['m01'] / M['m00'])
+                    cv2.putText(vis_image, str(ids[idx]), (cx, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
-    # 添加红色连接线
-    if line_pairs:
-        for pt1, pt2 in line_pairs:
-            cv2.line(vis_image, pt1, pt2, (0, 0, 255), 2)
-    return vis_image
+        # 添加红色连接线
+        if line_pairs:
+            for pt1, pt2 in line_pairs:
+                cv2.line(vis_image, pt1, pt2, (0, 0, 255), 2)
+        return vis_image
 
 if __name__ == "__main__":
     yolo_model_path = "checkpoints/best_yolo.pt"
     sam2_model_path = "checkpoints/sam2_b.pt"
-    # path_base = "imgs/img_from_camera"
-    path_base = "test_imgs/img4"
+    path_base = "imgs/img_from_camera"
+    # path_base = "test_imgs/img8"
     img_path = f"{path_base}.png"
     npz_path = f"{path_base}.npz"
 
     yolo_model = YOLO(yolo_model_path)
     class_names = yolo_model.names
-    '''
-    pipeline = rs.pipeline()
-    config = rs.config()
-    config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
-    config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
-    pipeline.start(config)
-
-    align = rs.align(rs.stream.color)
-    # Warm up the camera
-    for _ in range(10):
-        frames = pipeline.wait_for_frames()
-
-    # Capture one aligned RGB-D frame
-    frames = pipeline.wait_for_frames()
-
-    aligned_frames = align.process(frames)
-    color_frame = aligned_frames.get_color_frame()
-    depth_frame = aligned_frames.get_depth_frame()
-    if not color_frame or not depth_frame:
-        print("[ERROR] Failed to capture frames.")
-        exit(1)
-
-    # Convert frames to numpy arrays
-    color_image = np.asanyarray(color_frame.get_data())
-    depth_image = np.asanyarray(depth_frame.get_data())
-    # Save RGB and depth images
-    success = cv2.imwrite(img_path, color_image)
-    if not success:
-        print("[ERROR] RGB图像保存失败！")
-
-    np.savez_compressed(npz_path, color=color_image, depth=depth_image)
-    pipeline.stop()
     
-    # data = np.load(npz_path)
-    # color_image = data["color"]
-    # depth_image = data["depth"]
-    '''
+    # pipeline = rs.pipeline()
+    # config = rs.config()
+    # config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+    # config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
+    # pipeline.start(config)
+
+    # align = rs.align(rs.stream.color)
+    # # Warm up the camera
+    # for _ in range(10):
+    #     frames = pipeline.wait_for_frames()
+
+    # # Capture one aligned RGB-D frame
+    # frames = pipeline.wait_for_frames()
+
+    # aligned_frames = align.process(frames)
+    # color_frame = aligned_frames.get_color_frame()
+    # depth_frame = aligned_frames.get_depth_frame()
+    # if not color_frame or not depth_frame:
+    #     print("[ERROR] Failed to capture frames.")
+    #     exit(1)
+
+    # # Convert frames to numpy arrays
+    # color_image = np.asanyarray(color_frame.get_data())
+    # depth_image = np.asanyarray(depth_frame.get_data())
+    # # Save RGB and depth images
+    # success = cv2.imwrite(img_path, color_image)
+    # if not success:
+    #     print("[ERROR] RGB图像保存失败！")
+
+    # np.savez_compressed(npz_path, color=color_image, depth=depth_image)
+    # pipeline.stop()
+    
+    data = np.load(npz_path)
+    color_image = data["color"]
+    depth_image = data["depth"]
+
     if not os.path.exists(img_path):
         print(f"[ERROR] 图像路径不存在: {img_path}")
         exit(1)
@@ -305,7 +250,6 @@ if __name__ == "__main__":
         same_class_only=True,
         win=3
     )
-    print(f"[合并] 从 {len(boxes)} -> {len(mboxes)}，合并组: {groups}")
     
     # SAM 分割
     masks, sam_centers, result_path = segment_with_sam2(
@@ -328,17 +272,15 @@ if __name__ == "__main__":
             major_axis=major_axis,
             minor_axis=minor_axis,
             mean=mean,
-            center_ratio=0.4,
+            center_ratio=0.3,
             expand_pixels=20
         )
 
         affordance_masks.append(aff_mask)
-
         # 绘制叠加
         image_with_aff = draw_affordance_on_image(image_with_aff, aff_mask, color=(0, 255, 0), alpha=0.4)
     # 保存叠加可视化结果
     cv2.imwrite("output_affordance_overlay.png", cv2.cvtColor(image_with_aff, cv2.COLOR_RGB2BGR))
-    print("图像已保存至 output_affordance_overlay.png")
 
     # 遮挡检测
     occlusion_line_pairs = []
@@ -355,17 +297,22 @@ if __name__ == "__main__":
             all_masks=masks,
             all_affordance_masks=affordance_masks,
             pixel_gap=5,
-            debug=True
+            debug=True,
+            class_ids=class_ids,
+            class_names=class_names,
+            self_idx=idx
         )
+        # is_occluded, contact = check_depth_occlusion(
+        #     depth_image=depth_image,
+        #     mask=mask,
+        #     center=center,
+        #     all_masks=masks,
+        #     self_mask_index=idx,
+        #     class_ids=class_ids,
+        #     class_names=class_names,
+        #     debug=True
+        # )
 
-        if is_occluded:
-            print(f"物体 {idx} ({class_name}) 被遮挡")
-            if contact_pair:
-                occlusion_line_pairs.append(contact_pair)
-        else:
-            print(f"物体 {idx} ({class_name})无遮挡")
-
-    # 可视化：掩码边界 + 最短距离红线
     vis_img = draw_mask_boundaries(
         image_rgb,
         masks,
@@ -373,19 +320,3 @@ if __name__ == "__main__":
         line_pairs=occlusion_line_pairs
     )
     cv2.imwrite("imgs/occluded.png", vis_img)
-
-    # occlusion_graph, _ = build_occlusion_graph(
-    #     masks=masks,
-    #     depth_image=depth_image,
-    #     sam_centers=sam_centers,
-    #     class_ids=class_ids,
-    #     pixel_gap=20,
-    #     debug=False
-    # )
-
-    # # 打印分析结果
-    # summarize_occlusion_graph(
-    #     occlusion_graph=occlusion_graph,
-    #     class_ids=class_ids,
-    #     class_names=class_names
-    # )
