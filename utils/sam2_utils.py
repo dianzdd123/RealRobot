@@ -67,32 +67,7 @@ def segment_with_sam2(image_rgb, boxes, sam_model_path, input_image_path):
     # print(f"[Output] Saved mask visualization with centers to: {save_path}")
     return out_masks, centers, save_path
 
-def _pick_mask(mask_list: List[np.ndarray], pt_uv: Tuple[int, int], area_thres=0.35, image_shape=None):
-    """优先选择包含该点的 mask；否则选质心最近的"""
-    u, v = pt_uv
-    H, W = image_shape if image_shape else (720, 1280)
-    cand_inside = []
-    for m in mask_list:
-        if m is None or m.size == 0:
-            continue
-        if 0 <= v < m.shape[0] and 0 <= u < m.shape[1] and m[v, u] > 0:
-            cand_inside.append(m)
-    if cand_inside:
-        return max(cand_inside, key=lambda x: x.sum())
 
-    # fallback: 最近质心
-    best, best_d = None, 1e18
-    for m in mask_list:
-        ys, xs = np.nonzero(m)
-        if xs.size == 0:
-            continue
-        mx, my = xs.mean(), ys.mean()
-        d = (mx - u)**2 + (my - v)**2
-        if d < best_d:
-            best, best_d = m, d
-    return best
-
-def _shrink_roi_sam(model, image_path, u, v, H, W, r0=96, rmin=16):
     """自动缩小 ROI 大小，避免整面背景 mask"""
     r = r0
     while r >= rmin:
@@ -109,6 +84,116 @@ def _shrink_roi_sam(model, image_path, u, v, H, W, r0=96, rmin=16):
         r = int(r / 1.5)
     return None
 
+def shrink_mask(mask, all_masks, center, area_ratio_thresh, min_radius, max_radius):
+    """
+    如果mask面积过大，就返回一个与其他mask不重合的小圆形区域
+    """
+    H, W = mask.shape
+    u, v = center
+    area = int(mask.sum())
+    area_ratio = area / (H * W)
+    if area_ratio <= area_ratio_thresh:
+        print("normal mask")
+        return mask
+        
+
+    union_mask = np.zeros_like(mask, dtype=np.uint8)
+    for m in all_masks:
+        union_mask = cv2.bitwise_or(union_mask, m.astype(np.uint8))
+
+    for r in range(min_radius, max_radius + 1, 2):
+        Y, X = np.ogrid[:H, :W]
+        circle = ((X - u) ** 2 + (Y - v) ** 2 <= r ** 2).astype(np.uint8)
+        if np.sum(circle & union_mask) == 0:
+            return circle
+    return mask
+
+def _pick_mask(mask_list, center, image_shape):
+    u, v = center
+    for m in mask_list:
+        if m[v, u]:  # ensure point is in mask
+            return m
+    return None
+
+def segment_with_sam2_points(
+    image_rgb,
+    points_uv,
+    sam_model_path,
+    input_image_path,
+    point_radius_px=32,
+    prefer_points_prompt=True,
+    area_ratio_thresh=0.35
+):
+    model = SAM(sam_model_path)
+    
+    if isinstance(image_rgb, np.ndarray):
+        cv2.imwrite(input_image_path, cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR))
+    img = cv2.imread(input_image_path)
+    H, W = img.shape[:2]
+    overlay = img.copy()
+
+    masks, centers = [], []
+
+    for i, (u, v) in enumerate(points_uv):
+        u, v = int(np.clip(u, 0, W - 1)), int(np.clip(v, 0, H - 1))
+        results = None
+
+        if prefer_points_prompt:
+            try:
+                results = model(input_image_path, points=[[(u, v)]], labels=[[1]])
+            except Exception as e:
+                print(f"[ERROR] 点提示调用失败：{e}")
+                results = None
+
+        if results is None:
+            # fallback to bbox around point
+            r = point_radius_px
+            x1, y1 = max(u - r, 0), max(v - r, 0)
+            x2, y2 = min(u + r, W - 1), min(v + r, H - 1)
+            results = model(input_image_path, bboxes=[[x1, y1, x2, y2]])
+
+        mask_list = []
+        if hasattr(results[0], "masks") and results[0].masks is not None:
+            for m in results[0].masks.data:
+                mask_list.append(m.cpu().numpy().astype(np.uint8))
+
+        best_mask = _pick_mask(mask_list, (u, v), image_shape=(H, W))
+        if best_mask is None:
+            best_mask = np.zeros((H, W), dtype=np.uint8)
+
+        # 如果 mask 面积太大，缩成小圆形
+        best_mask = shrink_mask(
+            mask=best_mask,
+            all_masks=masks,
+            center=(u, v),
+            area_ratio_thresh=area_ratio_thresh,
+            min_radius=30,
+            max_radius=300
+        )
+
+        masks.append(best_mask)
+
+        # 计算中心点
+        if best_mask.any():
+            ys, xs = np.nonzero(best_mask)
+            cx, cy = int(xs.mean()), int(ys.mean())
+        else:
+            cx, cy = u, v
+        centers.append((cx, cy))
+
+        # 可视化
+        cnts, _ = cv2.findContours(best_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(overlay, cnts, -1, (0, 165, 255), 2)
+        cv2.circle(overlay, (u, v), 6, (255, 255, 255), -1)
+        cv2.circle(overlay, (u, v), 4, (0, 140, 255), -1)
+        cv2.putText(overlay, f"#{i}", (u + 6, v - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 120, 255), 1)
+
+    out_path = input_image_path.replace(".png", "_sam2_combined.png")
+    cv2.imwrite(out_path, overlay)
+
+    return masks, centers, out_path
+
+'''
 def segment_with_sam2_points(
     image_rgb,
     points_uv,
@@ -193,6 +278,7 @@ def segment_with_sam2_points(
                                .replace(".jpg", "_sam2_point_mask_combined.jpg")
     cv2.imwrite(out_path, overlay)
     return masks, centers, out_path
+'''
 
 if __name__ == "__main__":
     '''

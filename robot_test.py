@@ -17,6 +17,52 @@ import numpy as np
 from openai import OpenAI
 from dotenv import load_dotenv
 
+def init_robot_and_camera(robot_ip="192.168.1.117", img_path="color.png", npz_path="frames.npz"):
+    # ========== Step 1: Robot Initialization ==========
+    arm = XArmAPI(robot_ip)
+    arm.motion_enable(enable=True)
+    arm.set_state(0)     # Set to ready state
+    arm.set_mode(0)      # Set to position control mode
+
+    # Move robot to initial viewing position
+    arm.set_position(x=0, y=-346, z=500, roll=180, pitch=0, yaw=0, speed=80, wait=True)
+    arm.set_gripper_position(850, wait=True)
+
+    # ========== Step 2: RealSense Camera Initialization ==========
+    pipeline = rs.pipeline()
+    config = rs.config()
+    config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+    config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
+
+    pipeline.start(config)
+    align = rs.align(rs.stream.color)
+
+    # Warm up the camera
+    for _ in range(10):
+        pipeline.wait_for_frames()
+
+    # Capture one aligned RGB-D frame
+    frames = pipeline.wait_for_frames()
+    aligned_frames = align.process(frames)
+    color_frame = aligned_frames.get_color_frame()
+    depth_frame = aligned_frames.get_depth_frame()
+    if not color_frame or not depth_frame:
+        raise RuntimeError("[ERROR] Failed to capture frames.")
+
+    # Convert frames to numpy arrays
+    color_image = np.asanyarray(color_frame.get_data())
+    depth_image = np.asanyarray(depth_frame.get_data())
+
+    # Obtain camera intrinsics
+    depth_intrin = depth_frame.profile.as_video_stream_profile().intrinsics
+
+    # Save RGB and depth images
+    cv2.imwrite(img_path, color_image)
+    np.savez_compressed(npz_path, color=color_image, depth=depth_image)
+    pipeline.stop()
+
+    return arm, color_image, depth_image, depth_intrin
+
 if __name__ == "__main__": 
     '''
     System Workflow:
@@ -40,51 +86,8 @@ if __name__ == "__main__":
     json_path = f"{path_base}.json"
 
     # ========== Step 1: Robot Initialization and Image Capture ==========
-    arm = XArmAPI('192.168.1.117')  # Connect to robot
-
-    arm.motion_enable(enable=True)
-    arm.set_state(0)     # Set to ready state
-    arm.set_mode(0)      # Set to position control mode
-
-    # Move robot to initial viewing position
-    # arm.set_position(x=221.7, y=-3.4, z=450, roll=180, pitch=0, yaw=0, speed=65, wait=True)
-    # arm.set_position(x=0, y=-450, z=550, roll=180, pitch=0, yaw=0, speed=65, wait=True)
-    arm.set_position(x=0, y=-346, z=500, roll=180, pitch=0, yaw=0, speed=75, wait=True)
-    arm.set_gripper_position(850, wait=True)
-
-    # Start RealSense camera stream
-    pipeline = rs.pipeline()
-    config = rs.config()
-    config.enable_stream(rs.stream.color, 1280, 720, rs.format.bgr8, 30)
-    config.enable_stream(rs.stream.depth, 1280, 720, rs.format.z16, 30)
-    pipeline.start(config)
-
-    align = rs.align(rs.stream.color)
-    # Warm up the camera
-    for _ in range(10):
-        frames = pipeline.wait_for_frames()
-
-    # Capture one aligned RGB-D frame
-    frames = pipeline.wait_for_frames()
-
-    aligned_frames = align.process(frames)
-    color_frame = aligned_frames.get_color_frame()
-    depth_frame = aligned_frames.get_depth_frame()
-    if not color_frame or not depth_frame:
-        print("[ERROR] Failed to capture frames.")
-        exit(1)
-
-    # Convert frames to numpy arrays
-    color_image = np.asanyarray(color_frame.get_data())
-    depth_image = np.asanyarray(depth_frame.get_data())
-    # Obtain camera intrin
-    depth_intrin = depth_frame.profile.as_video_stream_profile().intrinsics
-
-    # Save RGB and depth images
-    cv2.imwrite(img_path, color_image)
-    np.savez_compressed(npz_path, color=color_image, depth=depth_image)
-
-    pipeline.stop()  # Stop the camera stream
+    arm, image_rgb, depth_image, depth_intrin = init_robot_and_camera(img_path=img_path, npz_path=npz_path)
+    print("Robot and camera initialized successfully.")
 
     # ========== Step 2: Object Detection with YOLO and SAM2==========
     image_rgb, boxes, yolo_centers, class_ids, yolo_output_path = detect_fruits(img_path, yolo_model_path)

@@ -381,14 +381,6 @@ if __name__ == "__main__":
     with open("occlusion_graph.json", "w", encoding="utf-8") as f:
         json.dump(result_json, f, ensure_ascii=False, indent=2)
 
-    with open("occlusion_summary.csv", "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(["blocked", "occluders_simple", "occluders_with_type"])
-        # 将 by_blocked 展开
-        for s, t in zip(simple_lines, typed_lines):
-            # s: "banana 被 a, b 遮挡"
-            blocked = s.split(" 被 ")[0]
-            writer.writerow([blocked, s, t])
 
     # 示例：以最后一个为目标，生成移除计划
     if N > 0:

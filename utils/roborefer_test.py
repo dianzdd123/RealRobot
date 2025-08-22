@@ -22,17 +22,17 @@ def start_server():
            "--port", str(PORT),
            "--depth_model_path", DEPTH_MODEL_PATH,
            "--vlm_model_path", VLM_MODEL_PATH]
-    print("[INFO] 启动服务：", " ".join(cmd), f"(cwd={API_DIR})")
+    # print("[INFO] 启动服务：", " ".join(cmd), f"(cwd={API_DIR})")
     return subprocess.Popen(cmd, cwd=API_DIR)
 
 def wait_ready(timeout=300):
-    print("[INFO] 等待服务就绪...")
+    # print("[INFO] 等待服务就绪...")
     t0 = time.time()
     while time.time() - t0 < timeout:
         try:
             r = requests.get(BASE + "/", timeout=2)
             if r.status_code == 200 and "Hello, World!" in r.text:
-                print("[INFO] 服务已就绪")
+                # print("[INFO] 服务已就绪")
                 return True
         except requests.RequestException:
             pass
@@ -107,7 +107,7 @@ def run_roborefer(image_path, prompts, server, verbose=False, save_path=None, en
         return points_uv, descriptions
     else:
         return points_uv
-
+'''测试roborefer能否正确运行，读取用户指令并在图片上指出点'''
 if __name__ == "__main__":
     image_path = "imgs/2.png"
     user_cmd = "grasp the left banana"
@@ -119,7 +119,7 @@ if __name__ == "__main__":
         prompts=prompts,
         server=server,
         verbose=True,
-        save_path="imgs/roborefer_point.jpg",
+        save_path="imgs/roborefer_point.png",
         return_name=True
     )
     server.terminate()

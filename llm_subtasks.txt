@@ -1,7 +1,11 @@
-Move to a position directly above the corn.
+Move to a position directly above the lemon.
 
-Descend vertically until the gripper is in position to grasp the corn.
+Descend vertically to grasp the lemon.
 
-Close the gripper to securely grasp the corn.
+Lift the lemon vertically to clear any obstacles.
 
-Ascend vertically to lift the corn from its current location.
+Move horizontally to a position directly above the target location, which is to the left of the banana.
+
+Descend vertically to place the lemon to the left of the banana.
+
+Release the lemon gently at the target location.
