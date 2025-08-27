@@ -186,28 +186,56 @@ def draw_affordance_on_image(image, mask, color=(0, 255, 0), alpha=0.4):
     overlay[mask > 0] = color
     return cv2.addWeighted(overlay, alpha, image, 1 - alpha, 0)
 
-def visualize_graspables_fullmask(image_rgb, masks, graspables, class_ids, class_names, out_path):
+def visualize_graspables_fullmask(
+    image_rgb,
+    masks,
+    graspables,
+    class_ids,
+    class_names,
+    out_path,
+    major_axes=None,
+    minor_axes=None,
+    centers=None
+):
     vis = image_rgb.copy()
-    # 先把“整物体mask”淡绿叠加
+
+    # === 1. 绘制原始物体mask，淡绿色 ===
     for i, m in enumerate(masks):
         overlay = vis.copy()
         ys, xs = np.nonzero(m)
-        overlay[ys, xs] = (overlay[ys, xs] * 0.5 + np.array((0,255,0)) * 0.5).astype(np.uint8)
+        overlay[ys, xs] = (overlay[ys, xs] * 0.5 + np.array((0, 255, 0)) * 0.5).astype(np.uint8)
         vis = overlay
-    # 再将“可抓取区（最大连通域）”用蓝色高亮
+
+    # === 2. 绘制可抓取区域，蓝色高亮 ===
     for i, g in enumerate(graspables):
         overlay = vis.copy()
         ys, xs = np.nonzero(g)
-        overlay[ys, xs] = (overlay[ys, xs] * 0.3 + np.array((0,0,255)) * 0.7).astype(np.uint8)
+        overlay[ys, xs] = (overlay[ys, xs] * 0.3 + np.array((0, 0, 255)) * 0.7).astype(np.uint8)
         vis = overlay
-        # 打标签
+
+        # === 3. 绘制物体标签 ===
         cnts, _ = cv2.findContours(masks[i].astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if cnts:
             cnt = max(cnts, key=cv2.contourArea)
             M = cv2.moments(cnt)
             if M["m00"] != 0:
-                cx = int(M["m10"]/M["m00"]); cy = int(M["m01"]/M["m00"])
+                cx = int(M["m10"] / M["m00"])
+                cy = int(M["m01"] / M["m00"])
                 label = f"{i}:{class_names[class_ids[i]]}"
-                cv2.putText(vis, label, (cx, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (30,30,30), 3)
-                cv2.putText(vis, label, (cx, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 1)
+                cv2.putText(vis, label, (cx, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (30, 30, 30), 3)
+                cv2.putText(vis, label, (cx, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+
+    # === 4. 绘制主轴(绿色)和副轴(红色) ===
+    if major_axes is not None and minor_axes is not None and centers is not None:
+        for i, center in enumerate(centers):
+            cx, cy = int(center[0]), int(center[1])
+            tip_major = (int(cx + major_axes[i][0] * 50), int(cy + major_axes[i][1] * 50))
+            tip_minor = (int(cx + minor_axes[i][0] * 50), int(cy + minor_axes[i][1] * 50))
+
+            # 主轴 - 绿色箭头
+            cv2.arrowedLine(vis, (cx, cy), tip_major, (0, 255, 0), 2, tipLength=0.2)
+            # 副轴 - 红色箭头
+            cv2.arrowedLine(vis, (cx, cy), tip_minor, (0, 0, 255), 2, tipLength=0.2)
+
+    # === 5. 保存结果 ===
     cv2.imwrite(out_path, cv2.cvtColor(vis, cv2.COLOR_RGB2BGR))

@@ -3,11 +3,10 @@ import cv2
 import os
 import pyrealsense2 as rs
 from ultralytics import YOLO
-from utils.yolo_utils import detect_fruits, merge_detections_by_depth_and_proximity
-from utils.sam2_utils import segment_with_sam2
-from utils.rotate import compute_affordance_mask
-from utils.rotate import draw_affordance_on_image
-from utils.rotate import infer_grasp_angle_and_width
+from yolo_utils import detect_fruits, merge_detections_by_depth_and_proximity
+from sam2_utils import segment_with_sam2
+from affordance_area import compute_affordance_mask, draw_affordance_on_image
+from rotate import infer_grasp_angle_and_width
 
 def robust_center_depth(depth_image, cx, cy, win=5):
     h, w = depth_image.shape
@@ -75,22 +74,29 @@ def check_depth_occlusion(depth_image, mask, center, all_masks, self_mask_index,
 '''
 def check_occlusion(depth_image, mask, affordance_mask, center,
                     all_masks=None, all_affordance_masks=None,
-                    pixel_gap=5, depth_diff_threshold=10, debug=False,
+                    depth_diff_threshold=10, debug=False,
                     class_ids=None, class_names=None, self_idx=None):
+    """
+    返回:
+      ok: bool
+      occluder_idx: int or None
+      occ_type: 'depth' 或 'proximity' 或 None
+      contact_pair: ((cx,cy),(px,py)) 或 None
+    """
     x, y = center
     h, w = depth_image.shape
     if not (0 <= x < w and 0 <= y < h):
-        return False, None
+        return False, None, None, None
 
     center_depth = robust_center_depth(depth_image, x, y, win=5)
     if center_depth is None:
-        return False, None
+        return False, None, None, None
 
-    # === 1. 深度遮挡判断 ===
+    # 1) 深度遮挡：你的边界比中心更近，且邻域属于别的物体
     contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if contours:
         boundary_points = contours[0][:, 0, :]
-        win = 2  
+        win = 2
         for pt in boundary_points:
             px, py = pt
             if not (0 <= px < w and 0 <= py < h):
@@ -100,69 +106,64 @@ def check_occlusion(depth_image, mask, affordance_mask, center,
                 continue
             depth_diff = center_depth - bd
             if depth_diff > depth_diff_threshold:
-                # 扩大邻域判断是否被其他物体覆盖
                 for j, other_mask in enumerate(all_masks):
-                    if np.array_equal(other_mask, mask):
+                    if j == self_idx:
                         continue
+                    hit = False
                     for dx in range(-win, win + 1):
                         for dy in range(-win, win + 1):
                             nx, ny = px + dx, py + dy
-                            if 0 <= nx < w and 0 <= ny < h:
-                                if other_mask[ny, nx] > 0:
-                                    if debug:
-                                        name_i = class_names[class_ids[self_idx]]
-                                        name_j = class_names[class_ids[j]]
-                                        print(f"[Depth Occlusion] Object {self_idx} ({name_i}) is occluded by object {j} ({name_j})")
-                                        # print(f" - Center depth: {center_depth}, Boundary depth: {bd}, Δ={depth_diff:.1f}")
-                                    return True, ((x, y), (px, py))
-        if debug:
-            name_i = class_names[class_ids[self_idx]]
-            # print(f"[Depth Check] Object {self_idx} ({name_i}) → no boundary occlusion detected.")
+                            if 0 <= nx < w and 0 <= ny < h and other_mask[ny, nx] > 0:
+                                hit = True
+                                break
+                        if hit:
+                            break
+                    if hit:
+                        if debug:
+                            name_i = class_names[class_ids[self_idx]]
+                            name_j = class_names[class_ids[j]]
+                            print(f"[Depth Occlusion] {self_idx} ({name_i}) ← {j} ({name_j})")
+                        return True, j, 'depth', ((x, y), (px, py))
 
-    # === 2. 靠近遮挡判断（基于实际重叠区域 + 深度）===
-    if all_masks and all_affordance_masks:
+    # 2) 靠近遮挡：affordance 区与他者 mask 有交叠，且对方不更远
+    if all_masks is not None and all_affordance_masks is not None:
         aff_mask_bin = affordance_mask.astype(np.uint8)
 
-        for j, (other_mask, _) in enumerate(zip(all_masks, all_affordance_masks)):
-            if np.array_equal(other_mask, mask):
+        for j, other_mask in enumerate(all_masks):
+            if j == self_idx:
                 continue
 
-            # 计算交集区域
             overlap = cv2.bitwise_and(aff_mask_bin, other_mask.astype(np.uint8))
-            overlap_area = np.sum(overlap > 0)
+            if np.count_nonzero(overlap) == 0:
+                continue
 
-            if overlap_area > 0:  # 阈值防止误判
-                aff_coords = np.column_stack(np.nonzero(aff_mask_bin))
-                other_coords = np.column_stack(np.nonzero(other_mask))
+            # 采样计算两侧近端深度
+            aff_coords = np.column_stack(np.nonzero(aff_mask_bin))
+            other_coords = np.column_stack(np.nonzero(other_mask))
+            if aff_coords.size == 0 or other_coords.size == 0:
+                continue
 
-                if aff_coords.size == 0 or other_coords.size == 0:
-                    continue
+            step_aff = max(1, len(aff_coords)//800)
+            step_oth = max(1, len(other_coords)//800)
+            aff_depths = [robust_center_depth(depth_image, x, y, win=3) for y, x in aff_coords[::step_aff]]
+            other_depths = [robust_center_depth(depth_image, x, y, win=3) for y, x in other_coords[::step_oth]]
 
-                aff_depths = [robust_center_depth(depth_image, x, y, win=3) for y, x in aff_coords]
-                other_depths = [robust_center_depth(depth_image, x, y, win=3) for y, x in other_coords]
+            aff_depths = [d for d in aff_depths if d is not None]
+            other_depths = [d for d in other_depths if d is not None]
+            if not aff_depths or not other_depths:
+                continue
 
-                aff_depths = [d for d in aff_depths if d is not None]
-                other_depths = [d for d in other_depths if d is not None]
+            min_aff = np.percentile(aff_depths, 30)
+            min_other = np.percentile(other_depths, 30)
 
-                if not aff_depths or not other_depths:
-                    continue
+            if min_other <= min_aff + 10:
+                if debug:
+                    name_i = class_names[class_ids[self_idx]]
+                    name_j = class_names[class_ids[j]]
+                    print(f"[Proximity Occlusion] {self_idx} ({name_i}) ← {j} ({name_j})")
+                return True, j, 'proximity', None
 
-                min_aff = np.percentile(aff_depths, 30)
-                min_other = np.percentile(other_depths, 30)
-
-                if min_other <= min_aff + 10:
-                    if debug:
-                        name_i = class_names[class_ids[self_idx]]
-                        name_j = class_names[class_ids[j]]
-                        print(f"[Proximity Occlusion] Object {self_idx} ({name_i}) is occluded by object {j} ({name_j})")
-                        # print(f" - Overlap area: {overlap_area}, d_aff≈{min_aff:.1f}, d_other≈{min_other:.1f}")
-                    return True, None
-
-        if debug:
-            name_i = class_names[class_ids[self_idx]]
-            # print(f"[Proximity Check] Object {self_idx} ({name_i}) → no overlap occlusion detected.")
-
-    return False, None
+    return False, None, None, None
 
 def draw_mask_boundaries(image, masks, color=(0, 255, 0), thickness=2, ids=None, line_pairs=None):
         vis_image = image.copy()
@@ -289,29 +290,19 @@ if __name__ == "__main__":
         class_name = class_names.get(class_id, f"class_{class_id}")
         center = sam_centers[idx]
 
-        is_occluded, contact_pair = check_occlusion(
+        is_occluded, contact_pair, _, _ = check_occlusion(
             depth_image=depth_image,
             mask=mask,
             affordance_mask=affordance_masks[idx],
             center=center,
             all_masks=masks,
             all_affordance_masks=affordance_masks,
-            pixel_gap=5,
             debug=True,
             class_ids=class_ids,
             class_names=class_names,
             self_idx=idx
         )
-        # is_occluded, contact = check_depth_occlusion(
-        #     depth_image=depth_image,
-        #     mask=mask,
-        #     center=center,
-        #     all_masks=masks,
-        #     self_mask_index=idx,
-        #     class_ids=class_ids,
-        #     class_names=class_names,
-        #     debug=True
-        # )
+
 
     vis_img = draw_mask_boundaries(
         image_rgb,

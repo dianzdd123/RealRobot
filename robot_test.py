@@ -101,26 +101,18 @@ if __name__ == "__main__":
         class_ids=class_ids,
         centers_xy=yolo_centers,                 # 使用 YOLO 返回的中心
         depth_image=depth_image.astype(np.uint16),
-        pixel_dist_thresh=60,
+        pixel_dist_thresh=100,
         depth_diff_thresh=20,
         same_class_only=True,
         win=3
     )
     
     # ========== Step 3: Segmentation and Grasp Info ==========
-    masks, sam_centers, _ = segment_with_sam2(
-        image_rgb=image_rgb,
-        boxes=mboxes,
-        sam_model_path=sam2_model_path,
-        input_image_path=img_path
-    )
+    masks, sam_centers, _ = segment_with_sam2(image_rgb=image_rgb, boxes=mboxes, sam_model_path=sam2_model_path, input_image_path=img_path)
+
     # ========== Step 3: Caculate the angle and width of object==========
-    grasp_infos, grasp_img_path = extract_grasp_infos(
-        image_rgb=image_rgb,
-        masks=masks,
-        pixel_to_meter=0.0005,
-        output_path=f"{path_base}_grasp_visual.png"
-    )
+    grasp_infos, grasp_img_path = extract_grasp_infos(image_rgb=image_rgb, masks=masks, pixel_to_meter=0.0005, output_path=f"{path_base}_grasp_visual.png")
+    
     # ========== Step 4: 3D Projection and Camera to World Coordinate==========
     centers_3d = get_3d_coords_from_centers(npz_path, sam_centers, depth_intrin)
     code, pos = arm.get_position(is_radian=False)

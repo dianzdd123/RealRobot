@@ -2,6 +2,7 @@
 from ultralytics import YOLO
 import cv2
 import numpy as np
+import os
 
 def robust_center_depth(depth_image, cx, cy, win=5):
     """
@@ -26,7 +27,7 @@ def depths_from_centers(depth_image, centers_xy, win=5):
 
 def merge_detections_by_depth_and_proximity(
     boxes, class_ids, centers_xy, depth_image,
-    pixel_dist_thresh=60, depth_diff_thresh=20, same_class_only=True, win=3
+    pixel_dist_thresh=100, depth_diff_thresh=20, same_class_only=True, win=3
 ):
     """
     - 两目标中心像素距离 < pixel_dist_thresh
@@ -121,8 +122,33 @@ def detect_fruits(input_path, yolo_path):
     cv2.imwrite(yolo_output_path, image_bgr)
     return image_rgb, boxes, centers, class_ids, yolo_output_path
 
-# # ====== main 函数测试 ======
+# ====== main 函数测试 ======
 # if __name__ == "__main__":
-#     input_path = "test.png"
-#     yolo_path = "yolo_train/train_data_split/runs/detect/train/weights/best.pt"
-#     detect_fruits(input_path, yolo_path)
+#     yolo_model_path = "checkpoints/best_yolo.pt"
+#     path_base = "test_imgs/img3"
+#     img_path = f"{path_base}.png"
+#     npz_path = f"{path_base}.npz"
+
+#     if not os.path.exists(img_path) or not os.path.exists(npz_path):
+#         raise FileNotFoundError("缺少图像或深度文件，请检查 img_path/npz_path")
+
+#     yolo_model = YOLO(yolo_model_path)
+#     class_names = yolo_model.names  # dict: id->name
+
+#     color_image = cv2.imread(img_path)
+#     data = np.load(npz_path)
+#     depth_image = data["depth"]
+
+#     image_rgb, boxes, yolo_centers, class_ids, yolo_output_path = detect_fruits(img_path, yolo_model_path)
+
+#     # 合并重复框
+#     mboxes, mclass_ids, mcenters, groups = merge_detections_by_depth_and_proximity(
+#         boxes=boxes,
+#         class_ids=class_ids,
+#         centers_xy=yolo_centers,
+#         depth_image=depth_image.astype(np.uint16),
+#         pixel_dist_thresh=100,
+#         depth_diff_thresh=20,
+#         same_class_only=True,
+#         win=3
+#     )
