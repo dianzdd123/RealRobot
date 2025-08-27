@@ -6,13 +6,12 @@ import numpy as np
 import pyrealsense2 as rs
 from collections import defaultdict, deque
 from ultralytics import YOLO
-
+import math
 from utils.yolo_utils import detect_fruits, merge_detections_by_depth_and_proximity
 from utils.sam2_utils import segment_with_sam2
-from utils.rotate import compute_affordance_mask, draw_affordance_on_image, infer_grasp_angle_and_width
+from utils.rotate import infer_grasp_angle_and_width, extract_grasp_infos
+from utils.affordance_area import compute_affordance_mask, compute_affordance_striped_fullwidth, draw_affordance_on_image, visualize_graspables_fullmask
 
-
-# ---------- 基础工具 ----------
 def robust_center_depth(depth_image, cx, cy, win=5):
     h, w = depth_image.shape
     cx = int(round(cx)); cy = int(round(cy))
@@ -26,11 +25,9 @@ def robust_center_depth(depth_image, cx, cy, win=5):
         return None
     return int(np.median(vals))
 
-
-# ---------- 遮挡检测（返回遮挡者索引与类型） ----------
 def check_occlusion(depth_image, mask, affordance_mask, center,
                     all_masks=None, all_affordance_masks=None,
-                    pixel_gap=5, depth_diff_threshold=10, debug=False,
+                    depth_diff_threshold=10, debug=False,
                     class_ids=None, class_names=None, self_idx=None):
     """
     返回:
@@ -121,8 +118,6 @@ def check_occlusion(depth_image, mask, affordance_mask, center,
 
     return False, None, None, None
 
-
-# ---------- 可视化 ----------
 def draw_mask_boundaries(image, masks, color=(0, 255, 0), thickness=2, ids=None, line_pairs=None):
     vis_image = image.copy()
     for idx, mask in enumerate(masks):
@@ -142,8 +137,6 @@ def draw_mask_boundaries(image, masks, color=(0, 255, 0), thickness=2, ids=None,
             cv2.line(vis_image, pt1, pt2, (0, 0, 255), 2)
     return vis_image
 
-
-# ---------- 构图与计划 ----------
 def build_occlusion_graph(num_nodes, edges_with_type):
     adj = defaultdict(set)
     etypes = {}
@@ -154,7 +147,6 @@ def build_occlusion_graph(num_nodes, edges_with_type):
             etypes[(u, v)] = t
             indeg[v] += 1
     return adj, etypes, indeg
-
 
 def topo_layers(adj, indeg):
     indeg = indeg.copy()
@@ -172,7 +164,6 @@ def topo_layers(adj, indeg):
             if d == 0 and v not in visited and v not in q:
                 q.append(v)
     return layers
-
 
 def plan_to_reach_target(adj, indeg, target):
     rev = defaultdict(set)
@@ -209,7 +200,6 @@ def plan_to_reach_target(adj, indeg, target):
                 dq.append(v)
     return order
 
-
 # ---------- 汇总成“banana 被 potato, tomato 遮挡” ----------
 def summarize_occlusions(edges_with_type, class_ids, class_names):
     by_blocked = {}
@@ -232,12 +222,12 @@ def summarize_occlusions(edges_with_type, class_ids, class_names):
         lines_with_type.append(f"{v_name} 被 {', '.join(parts)} 遮挡")
     return lines_simple, lines_with_type
 
-
 # ---------- 主程序 ----------
 if __name__ == "__main__":
     yolo_model_path = "checkpoints/best_yolo.pt"
     sam2_model_path = "checkpoints/sam2_b.pt"
-    path_base = "imgs/img_from_camera"  # 或 "test_imgs/img8"
+    # path_base = "imgs/img_from_camera"
+    path_base = "test_imgs/img0"
     img_path = f"{path_base}.png"
     npz_path = f"{path_base}.npz"
 
@@ -307,7 +297,21 @@ if __name__ == "__main__":
         affordance_masks.append(aff_mask)
         image_with_aff = draw_affordance_on_image(image_with_aff, aff_mask, color=(0, 255, 0), alpha=0.4)
     cv2.imwrite("output_affordance_overlay.png", cv2.cvtColor(image_with_aff, cv2.COLOR_RGB2BGR))
+    
+    grasp_angles, widths, major_axes, minor_axes = [], [], [], []
+    for i, m in enumerate(masks):
+        angle, width, _, major_axis, minor_axis = infer_grasp_angle_and_width(m, draw_on=image_rgb, object_index=i)
+        grasp_angles.append(angle)
+        widths.append(width)
+        major_axes.append(major_axis)
+        minor_axes.append(minor_axis)
 
+    # grasp_infos, grasp_img_path = extract_grasp_infos(
+    #     image_rgb=image_rgb,
+    #     masks=masks,
+    #     pixel_to_meter=0.0005,
+    #     output_path=f"{path_base}_grasp_visual.png"
+    # )
     # 遮挡检测与边收集
     occlusion_line_pairs = []
     edges_with_type = []  # (occluder, blocked, type)
@@ -341,51 +345,84 @@ if __name__ == "__main__":
     os.makedirs("imgs", exist_ok=True)
     cv2.imwrite("imgs/occluded.png", vis_img)
 
-    # 构建图、分层、计划
-    N = len(masks)
-    adj, etypes, indeg = build_occlusion_graph(N, edges_with_type)
+        # === 用整物体mask计算可抓取区域（减去所有其他物体影响，保留最大连通域）===
+    graspables, ginfos = [], []
+    for i in range(len(masks)):
+        g, info = compute_affordance_striped_fullwidth(
+            idx=i,
+            masks=masks,
+            depth_image=depth_image.astype(np.uint16),
+            class_ids=mclass_ids,
+            class_names=class_names,
+            major_axes=major_axes,
+            minor_axes=minor_axes,
+            widths=widths,
+            prox_dilate_px=12,
+            depth_dilate_px=6,
+            depth_margin_mm=20,
+            sample_step=2,
+            local_win=3,
+            stripe_bin_px=1
+        )
+        graspables.append(g)
+        ginfos.append(info)
 
-    print("===== Occlusion Edges (u -> v) =====")
-    for u, vs in adj.items():
-        for v in vs:
-            name_u = class_names[mclass_ids[u]]
-            name_v = class_names[mclass_ids[v]]
-            t = etypes[(u, v)]
-            zh = "上层" if t == 'depth' else "靠近"
-            print(f"{u}({name_u}) -> {v}({name_v}) [{zh}]")
-
-    layers = topo_layers(adj, indeg)
-    print("===== Layers =====")
-    for k, layer in enumerate(layers, 1):
-        labels = [f"{i}({class_names[mclass_ids[i]]})" for i in layer]
-        print(f"Layer {k}: {labels}")
-
-    # 汇总“banana 被 potato, tomato 遮挡”
-    simple_lines, typed_lines = summarize_occlusions(edges_with_type, mclass_ids, class_names)
-    print("===== 遮挡汇总（简洁）=====")
-    for s in simple_lines: print(s)
-    print("===== 遮挡汇总（含类型）=====")
-    for s in typed_lines: print(s)
-
-    # 可选：导出 JSON 和 CSV
-    result_json = {
-        "nodes": [
-            {"idx": i, "class": class_names[mclass_ids[i]], "center": list(map(float, sam_centers[i]))}
-            for i in range(N)
-        ],
-        "edges": [{"u": u, "v": v, "type": t} for (u, v, t) in edges_with_type],
-        "layers": layers,
-        "summary_simple": simple_lines,
-        "summary_typed": typed_lines
-    }
-    with open("occlusion_graph.json", "w", encoding="utf-8") as f:
-        json.dump(result_json, f, ensure_ascii=False, indent=2)
+    os.makedirs("imgs", exist_ok=True)
+    visualize_graspables_fullmask(
+        image_rgb=image_rgb,
+        masks=masks,
+        graspables=graspables,
+        class_ids=mclass_ids,
+        class_names=class_names,
+        out_path="test_imgs/graspables_fullmask.png"
+    )
 
 
-    # 示例：以最后一个为目标，生成移除计划
-    if N > 0:
-        target_idx = N - 1
-        plan = plan_to_reach_target(adj, indeg, target_idx)
-        plan_labels = [f"{i}({class_names[mclass_ids[i]]})" for i in plan] + [f"{target_idx}({class_names[mclass_ids[target_idx]]})"]
-        print("===== Step Plan to reach target =====")
-        print(" -> ".join(plan_labels))
+    # # 构建图、分层、计划
+    # N = len(masks)
+    # adj, etypes, indeg = build_occlusion_graph(N, edges_with_type)
+
+    # print("===== Occlusion Edges (u -> v) =====")
+    # for u, vs in adj.items():
+    #     for v in vs:
+    #         name_u = class_names[mclass_ids[u]]
+    #         name_v = class_names[mclass_ids[v]]
+    #         t = etypes[(u, v)]
+    #         zh = "上层" if t == 'depth' else "靠近"
+    #         print(f"{u}({name_u}) -> {v}({name_v}) [{zh}]")
+
+    # layers = topo_layers(adj, indeg)
+    # print("===== Layers =====")
+    # for k, layer in enumerate(layers, 1):
+    #     labels = [f"{i}({class_names[mclass_ids[i]]})" for i in layer]
+    #     print(f"Layer {k}: {labels}")
+
+    # # 汇总“banana 被 potato, tomato 遮挡”
+    # simple_lines, typed_lines = summarize_occlusions(edges_with_type, mclass_ids, class_names)
+    # print("===== 遮挡汇总（简洁）=====")
+    # for s in simple_lines: print(s)
+    # print("===== 遮挡汇总（含类型）=====")
+    # for s in typed_lines: print(s)
+
+    # # 可选：导出 JSON 和 CSV
+    # result_json = {
+    #     "nodes": [
+    #         {"idx": i, "class": class_names[mclass_ids[i]], "center": list(map(float, sam_centers[i]))}
+    #         for i in range(N)
+    #     ],
+    #     "edges": [{"u": u, "v": v, "type": t} for (u, v, t) in edges_with_type],
+    #     "layers": layers,
+    #     "summary_simple": simple_lines,
+    #     "summary_typed": typed_lines
+    # }
+    # with open("occlusion_graph.json", "w", encoding="utf-8") as f:
+    #     json.dump(result_json, f, ensure_ascii=False, indent=2)
+
+
+    # # 示例：以最后一个为目标，生成移除计划
+    # if N > 0:
+    #     target_idx = N - 1
+    #     plan = plan_to_reach_target(adj, indeg, target_idx)
+    #     plan_labels = [f"{i}({class_names[mclass_ids[i]]})" for i in plan] + [f"{target_idx}({class_names[mclass_ids[target_idx]]})"]
+    #     print("===== Step Plan to reach target =====")
+    #     print(" -> ".join(plan_labels))

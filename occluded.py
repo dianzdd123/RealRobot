@@ -21,58 +21,58 @@ def robust_center_depth(depth_image, cx, cy, win=5):
     if vals.size == 0:
         return None
     return int(np.median(vals))
+'''
+def check_depth_occlusion(depth_image, mask, center, all_masks, self_mask_index,
+                          class_ids, class_names, debug=False,
+                          depth_diff_threshold=10):
+    """
+    判断当前物体 mask 是否被其他物体遮挡（深度遮挡判断）
+    """
+    h, w = depth_image.shape
+    x, y = center
+    if not (0 <= x < w and 0 <= y < h):
+        return False, None
 
-# def check_depth_occlusion(depth_image, mask, center, all_masks, self_mask_index,
-#                           class_ids, class_names, debug=False,
-#                           depth_diff_threshold=10):
-#     """
-#     判断当前物体 mask 是否被其他物体遮挡（深度遮挡判断）
-#     """
-#     h, w = depth_image.shape
-#     x, y = center
-#     if not (0 <= x < w and 0 <= y < h):
-#         return False, None
+    center_depth = robust_center_depth(depth_image, x, y, win=5)
+    if center_depth is None:
+        return False, None
 
-#     center_depth = robust_center_depth(depth_image, x, y, win=5)
-#     if center_depth is None:
-#         return False, None
+    # 提取当前物体边界点
+    contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours or len(contours[0]) == 0:
+        return False, None
 
-#     # 提取当前物体边界点
-#     contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-#     if not contours or len(contours[0]) == 0:
-#         return False, None
+    boundary_points = contours[0][:, 0, :]  # (N, 2)
 
-#     boundary_points = contours[0][:, 0, :]  # (N, 2)
+    for pt in boundary_points:
+        px, py = pt
+        if not (0 <= px < w and 0 <= py < h):
+            continue
 
-#     for pt in boundary_points:
-#         px, py = pt
-#         if not (0 <= px < w and 0 <= py < h):
-#             continue
+        # 检查该边界点是否与其他物体 mask 重叠
+        for j, other_mask in enumerate(all_masks):
+            if j == self_mask_index:
+                continue
 
-#         # 检查该边界点是否与其他物体 mask 重叠
-#         for j, other_mask in enumerate(all_masks):
-#             if j == self_mask_index:
-#                 continue
+            if other_mask[py, px] > 0:  # 重叠了
+                bd = robust_center_depth(depth_image, px, py, win=3)
+                if bd is None:
+                    continue
+                depth_diff = center_depth - bd
+                if depth_diff > depth_diff_threshold:
+                    if debug:
+                        name_i = class_names[class_ids[self_mask_index]]
+                        name_j = class_names[class_ids[j]]
+                        print(f"[Depth Occlusion] Object {self_mask_index} ({name_i}) is occluded by object {j} ({name_j})")
+                        print(f" - Boundary point: ({px}, {py}), center depth: {center_depth}, boundary depth: {bd}, Δ={depth_diff:.1f}")
+                    return True, ((x, y), (px, py))
 
-#             if other_mask[py, px] > 0:  # 重叠了
-#                 bd = robust_center_depth(depth_image, px, py, win=3)
-#                 if bd is None:
-#                     continue
-#                 depth_diff = center_depth - bd
-#                 if depth_diff > depth_diff_threshold:
-#                     if debug:
-#                         name_i = class_names[class_ids[self_mask_index]]
-#                         name_j = class_names[class_ids[j]]
-#                         print(f"[Depth Occlusion] Object {self_mask_index} ({name_i}) is occluded by object {j} ({name_j})")
-#                         print(f" - Boundary point: ({px}, {py}), center depth: {center_depth}, boundary depth: {bd}, Δ={depth_diff:.1f}")
-#                     return True, ((x, y), (px, py))
+    if debug:
+        name_i = class_names[class_ids[self_mask_index]]
+        print(f"[Depth Check] Object {self_mask_index} ({name_i}) → no depth occlusion found.")
 
-#     if debug:
-#         name_i = class_names[class_ids[self_mask_index]]
-#         print(f"[Depth Check] Object {self_mask_index} ({name_i}) → no depth occlusion found.")
-
-#     return False, None
-
+    return False, None
+'''
 def check_occlusion(depth_image, mask, affordance_mask, center,
                     all_masks=None, all_affordance_masks=None,
                     pixel_gap=5, depth_diff_threshold=10, debug=False,
@@ -187,8 +187,8 @@ def draw_mask_boundaries(image, masks, color=(0, 255, 0), thickness=2, ids=None,
 if __name__ == "__main__":
     yolo_model_path = "checkpoints/best_yolo.pt"
     sam2_model_path = "checkpoints/sam2_b.pt"
-    path_base = "imgs/img_from_camera"
-    # path_base = "test_imgs/img8"
+    # path_base = "imgs/img_from_camera"
+    path_base = "test_imgs/img2"
     img_path = f"{path_base}.png"
     npz_path = f"{path_base}.npz"
 
