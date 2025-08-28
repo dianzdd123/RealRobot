@@ -88,8 +88,10 @@ def infer_grasp_angle_and_width(mask, draw_on=None, object_index=0, pixel_to_met
     coords = np.stack((xs, ys), axis=1)
 
     if len(coords) < 10:
-        print("⚠️ mask 太小，跳过")
-        return 0, 0, draw_on if draw_on is not None else np.zeros((*mask.shape, 3), dtype=np.uint8)
+        print("mask 太小，跳过")
+        dummy_img = draw_on if draw_on is not None else np.zeros((*mask.shape, 3), dtype=np.uint8)
+        return 0, 0, dummy_img, np.array([1, 0]), np.array([0, 1])
+
 
     # 1. 中心化坐标
     mean = np.mean(coords, axis=0)

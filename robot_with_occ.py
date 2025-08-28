@@ -5,7 +5,7 @@ from utils.coordinate import get_3d_coords_from_centers
 from utils.save_json import save_json_from_detection, save_scene_info_to_json
 from utils.rotate import extract_grasp_infos, infer_grasp_angle_and_width
 from xarm.wrapper import XArmAPI
-from utils.API import subtasks_planner, trajectory_plan_on_real
+# from utils.API import subtasks_planner, trajectory_plan_on_real
 from utils.camera_to_world import camera_to_world
 from utils.traj_execute import execute
 from utils.affordance_area import compute_affordance_mask, compute_affordance_striped_fullwidth
@@ -17,7 +17,7 @@ import cv2
 import numpy as np
 from openai import OpenAI
 from dotenv import load_dotenv
-from utils.occluded import check_occlusion
+from utils.occluded import check_occlusion, save_occlusion_info, compute_grasp_difficulty
 from ultralytics import YOLO
 
 def init_robot_and_camera(robot_ip="192.168.1.117", img_path="color.png", npz_path="frames.npz"):
@@ -128,6 +128,7 @@ def recompute_for_mutual_occlusions(image_rgb, depth_image, masks, sam_centers,
                                     class_ids, class_names, mutual_pairs,
                                     major_axes, minor_axes, affordance_masks,
                                     grasp_angles, widths):
+    MIN_MASK_AREA = 10
     for idx1, idx2 in mutual_pairs:
         for idx in [idx1, idx2]:
             new_mask, _ = compute_affordance_striped_fullwidth(
@@ -138,13 +139,23 @@ def recompute_for_mutual_occlusions(image_rgb, depth_image, masks, sam_centers,
                 class_names=class_names,
                 major_axes=major_axes,
                 minor_axes=minor_axes,
-                prox_dilate_px=12,
+                prox_dilate_px=15,
                 depth_dilate_px=6,
                 depth_margin_mm=20,
                 sample_step=2,
                 local_win=3,
                 stripe_bin_px=1
             )
+
+            # === 检查mask大小 ===
+            nonzero = np.count_nonzero(new_mask)
+            orig_area = np.count_nonzero(masks[idx])
+            print(f"[DEBUG] Object {idx}: 原始面积={orig_area}, 重算面积={nonzero}")
+
+            if nonzero < MIN_MASK_AREA:
+                print(f"[WARN] Object {idx} 新affordance太小({nonzero}px)，跳过更新，继续用原始mask")
+                continue
+
             # 更新affordance mask
             affordance_masks[idx] = new_mask
             # 更新抓取角度和宽度
@@ -175,16 +186,30 @@ if __name__ == "__main__":
     # ========== Step 0: Paths and model configuration ==========
     yolo_model_path = "checkpoints/best_yolo.pt"
     sam2_model_path = "checkpoints/sam2_b.pt"
-    path_base = "imgs/img_from_camera"
+    path_base = "test_imgs/img0"
     img_path = f"{path_base}.png"
     npz_path = f"{path_base}.npz"
     json_path = f"{path_base}.json"
     yolo_model = YOLO(yolo_model_path)
     class_names = yolo_model.names
 
-    # ========== Step 1: Robot Initialization and Image Capture ==========
-    arm, image_rgb, depth_image, depth_intrin = init_robot_and_camera(img_path=img_path, npz_path=npz_path)
-    print("Robot and camera initialized successfully.")
+    yolo_model = YOLO(yolo_model_path)
+    class_names = yolo_model.names
+
+
+    if not os.path.exists(img_path) or not os.path.exists(npz_path):
+        raise FileNotFoundError("缺少图像或深度文件，请检查 img_path/npz_path")
+
+    yolo_model = YOLO(yolo_model_path)
+    class_names = yolo_model.names  # dict: id->name
+
+    color_image = cv2.imread(img_path)
+    data = np.load(npz_path)
+    depth_image = data["depth"]
+
+    # # ========== Step 1: Robot Initialization and Image Capture ==========
+    # arm, image_rgb, depth_image, depth_intrin = init_robot_and_camera(img_path=img_path, npz_path=npz_path)
+    # print("Robot and camera initialized successfully.")
 
     # ========== Step 2: Object Detection with YOLO ==========
     image_rgb, boxes, yolo_centers, class_ids, yolo_output_path = detect_fruits(img_path, yolo_model_path)
@@ -212,16 +237,12 @@ if __name__ == "__main__":
         input_image_path=img_path
     )
 
-    # ========== Step 3.5: Extract Grasp Features ==========
-        # ========== Step 4. 初始affordance计算 ==========
+    # ========== Step 4. 初始affordance计算 ==========
     affordance_masks, grasp_angles, widths, major_axes, minor_axes = compute_initial_affordance(
         image_rgb, masks, sam_centers
     )
 
     # ========== Step 5. 遮挡检测 ==========
-    from ultralytics import YOLO
-    yolo_model = YOLO(yolo_model_path)
-    class_names = yolo_model.names
     occlusion_info = detect_all_occlusions(depth_image, masks, affordance_masks, sam_centers, class_ids, class_names)
 
     # ========== Step 6. 互相遮挡处理 ==========
@@ -232,41 +253,27 @@ if __name__ == "__main__":
             image_rgb, depth_image, masks, sam_centers, class_ids, class_names,
             mutual_pairs, major_axes, minor_axes, affordance_masks, grasp_angles, widths
         )
+        graspable_flags, grasp_difficulties = compute_grasp_difficulty(masks, affordance_masks)
+    save_occlusion_info(occlusion_info, class_ids, class_names, "results/occlusion_info.json")
 
-    # ========== Step 7. 计算3D世界坐标 ==========
-    centers_3d = get_3d_coords_from_centers(npz_path, sam_centers, depth_intrin)
-    code, pos = arm.get_position(is_radian=False)
-    tcp_pose = pos[:6]
-    world_coords = []
-    for i, pt in enumerate(centers_3d):
-        if pt is None or np.allclose(pt, [0, 0, 0]):
-            print(f"[WARN] Object {i} invalid 3D point, skipped")
-            world_coords.append(None)
-            continue
-        camera_point_m = np.array(pt)
-        world_point = camera_to_world(camera_point_m, tcp_pose, verbose=True)
-        world_coords.append(world_point.tolist())
+    # # ========== Step 7. 计算3D世界坐标 ==========
+    # centers_3d = get_3d_coords_from_centers(npz_path, sam_centers, depth_intrin)
+    # code, pos = arm.get_position(is_radian=False)
+    # tcp_pose = pos[:6]
+    # world_coords = []
+    # for i, pt in enumerate(centers_3d):
+    #     if pt is None or np.allclose(pt, [0, 0, 0]):
+    #         print(f"[WARN] Object {i} invalid 3D point, skipped")
+    #         world_coords.append(None)
+    #         continue
+    #     camera_point_m = np.array(pt)
+    #     world_point = camera_to_world(camera_point_m, tcp_pose, verbose=True)
+    #     world_coords.append(world_point.tolist())
 
-    # ========== Step 8. 保存场景JSON ==========
-    save_scene_info_to_json(json_path, class_ids, class_names, world_coords, grasp_angles, widths, occlusion_info)
+    # # ========== Step 8. 保存场景JSON ==========
+    # save_scene_info_to_json(json_path, class_ids, class_names, world_coords, grasp_angles, widths, occlusion_info)
 
-    # ========== Step 9. LLM解析用户指令 ==========
-    load_dotenv()
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    user_input = input("Enter your robot instruction: ")
-    task_description = subtasks_planner(user_input)
-    subtasks_file = "llm_subtasks.txt"
-    with open(subtasks_file, "w") as f:
-        f.write(task_description)
 
-    # ========== Step 10. LLM生成轨迹并执行 ==========
-    trajectory_json_path = "trajectory_plan.json"
-    trajectory_plan_on_real(
-        subtask_txt_path=subtasks_file,
-        json_path=json_path,
-        save_json_path=trajectory_json_path
-    )
-    execute(trajectory_json_path, arm)
 
     # # ========== Step 6: Save Scene to JSON ==========
     # save_scene_info_to_json(
