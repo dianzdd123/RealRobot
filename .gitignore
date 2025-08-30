@@ -6,3 +6,5 @@ utils/__pycache__/
 *.pt
 *.txt
 *.json
+__pycache__/
+*.pyc
