@@ -15,7 +15,7 @@ _rotation_quaternion = np.array([
     0.7035302095188808
 ])
 
-_offset = np.array([0.07, 0.0, 0.0])  # TCP 抓取点补偿（米）
+_offset = np.array([0.05, 0.0, 0.0])  # TCP 抓取点补偿（米）
 
 # 相机坐标 → 世界坐标
 def camera_to_world(camera_point, tcp_pose, min_z_mm=220, verbose=False):

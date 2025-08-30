@@ -130,7 +130,7 @@ def main():
     yolo_model_path = "checkpoints/best_yolo.pt"
     sam2_model_path = "checkpoints/sam2_b.pt"
     # path_base = "imgs/img_from_camera"
-    path_base = "test_imgs/img2"
+    path_base = "test_imgs/img5"
     img_path = f"{path_base}.png"
     npz_path = f"{path_base}.npz"
 

@@ -1,12 +1,16 @@
 import numpy as np
 import cv2
 import os
+import json
 import pyrealsense2 as rs
 from ultralytics import YOLO
-from yolo_utils import detect_fruits, merge_detections_by_depth_and_proximity
-from sam2_utils import segment_with_sam2
-from affordance_area import compute_affordance_mask, draw_affordance_on_image
-from rotate import infer_grasp_angle_and_width
+from .yolo_utils import detect_fruits, merge_detections_by_depth_and_proximity
+from .sam2_utils import segment_with_sam2
+from .affordance_area import compute_affordance_mask, draw_affordance_on_image
+from .rotate import infer_grasp_angle_and_width
+
+MIN_AFFORDANCE_PIXELS = 150  # 小于该面积的区域标记为不可直接抓取
+DEPTH_DIFF_THRESHOLD = 10    # 深度遮挡判定阈值（mm）
 
 def robust_center_depth(depth_image, cx, cy, win=5):
     h, w = depth_image.shape
@@ -185,11 +189,48 @@ def draw_mask_boundaries(image, masks, color=(0, 255, 0), thickness=2, ids=None,
                 cv2.line(vis_image, pt1, pt2, (0, 0, 255), 2)
         return vis_image
 
+def compute_grasp_difficulty(masks, affordance_masks):
+    graspable_flags, grasp_difficulties = [], []
+    for m, aff in zip(masks, affordance_masks):
+        aff_pixels = np.count_nonzero(aff)
+        total_pixels = np.count_nonzero(m)
+        if aff_pixels < MIN_AFFORDANCE_PIXELS:
+            graspable_flags.append(False)
+            grasp_difficulties.append(1.0)
+        else:
+            graspable_flags.append(True)
+            grasp_difficulties.append(1 - aff_pixels / total_pixels)
+    return graspable_flags, grasp_difficulties
+
+# ---------- 保存遮挡关系 ----------
+def save_occlusion_info(occlusion_info, class_ids, class_names, output_path):
+    """
+    保存遮挡关系列表，方便调试。
+    occlusion_info: { idx: [(other_idx, occ_type), ...] }
+    """
+    occlusion_data = []
+    for i, relations in occlusion_info.items():
+        obj_name = class_names[class_ids[i]]
+        entry = {
+            "object": obj_name,
+            "occluded_by": [
+                {"by": class_names[class_ids[j]], "type": occ_type}
+                for j, occ_type in relations
+            ]
+        }
+        occlusion_data.append(entry)
+
+    with open(output_path, "w") as f:
+        json.dump(occlusion_data, f, indent=2)
+
+    print(f"✅ 遮挡信息已保存: {output_path}")
+
+
 if __name__ == "__main__":
     yolo_model_path = "checkpoints/best_yolo.pt"
     sam2_model_path = "checkpoints/sam2_b.pt"
     # path_base = "imgs/img_from_camera"
-    path_base = "test_imgs/img2"
+    path_base = "test_imgs/img4"
     img_path = f"{path_base}.png"
     npz_path = f"{path_base}.npz"
 

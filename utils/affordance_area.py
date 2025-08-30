@@ -22,7 +22,7 @@ def compute_affordance_striped_fullwidth(
     class_names,
     major_axes,
     minor_axes,
-    prox_dilate_px=12,
+    prox_dilate_px=15,
     depth_dilate_px=6,
     depth_margin_mm=20,
     sample_step=2,

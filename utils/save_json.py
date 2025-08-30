@@ -1,6 +1,9 @@
 import json
 from ultralytics import YOLO
 
+import json
+from ultralytics import YOLO
+
 def save_scene_info_to_json(
     class_ids,
     coords_3d,
@@ -9,83 +12,58 @@ def save_scene_info_to_json(
     widths=None,
     angles=None,
     quaternions=None,
-    occlusion_info=None
+    occlusion_info=None  # 新增：遮挡信息
 ):
     """
     保存场景中每个物体的信息为 JSON 文件。
-
-    必须字段：
-        - class: 类别名
-        - coord_3d: 三维坐标
-
-    可选字段：
-        - gripper: 抓取宽度（米）
-        - yaw: 抓取角度（度）
-        - quat: 姿态四元数
-        - occluded: 是否被遮挡
-        - occlusion_type: 遮挡类型 ('depth' / 'proximity')
-        - occluder: 遮挡者 ID
-        - blocked_objects: 当前物体挡住的物体 ID
+    新增字段：
+        occlusions: 该物体被哪些物体遮挡，列表形式，元素包含：
+            - by_id: 遮挡者的索引
+            - by_class: 遮挡者的类别名
+            - type: 遮挡类型 ("depth" | "proximity")
     """
     assert len(class_ids) == len(coords_3d), "class_ids 和 coords_3d 长度不一致"
 
-    # 获取类别名映射
-    if yolo_path:
-        names = YOLO(yolo_path).names
-    else:
-        names = {}
-
-    # 如果传入了遮挡信息，则初始化全局遮挡图
-    occlusion_graph = {str(i): [] for i in range(len(class_ids))} if occlusion_info else None
+    # 加载 YOLO 类别映射
+    names = YOLO(yolo_path).names if yolo_path else {}
 
     data = []
     for i, (cls_id, coord) in enumerate(zip(class_ids, coords_3d)):
         if coord is None:
             continue
 
-        label = names.get(int(cls_id), f"id:{int(cls_id)}")
         entry = {
             "id": i,
-            "class": label,
+            "class": names.get(int(cls_id), f"id:{int(cls_id)}"),
             "coord_3d": [round(coord[0], 3), round(coord[1], 3), round(coord[2], 3)]
         }
 
-        # === 原始可选字段 ===
+        # 可选字段
         if widths and i < len(widths):
-            entry["gripper"] = round(widths[i], 2)
+            entry["gripper"] = round(widths[i], 4)
         if angles and i < len(angles):
             entry["yaw"] = round(angles[i], 2)
         if quaternions and i < len(quaternions):
             entry["quat"] = [round(q, 4) for q in quaternions[i]]
 
-        # === 新增遮挡相关字段 ===
+        # 遮挡信息
+        entry["occlusions"] = []
         if occlusion_info and i in occlusion_info:
-            occ = occlusion_info[i]
-            entry["occluded"] = not occ["ok"]
-            entry["occlusion_type"] = occ["occ_type"]
-            entry["occluder"] = occ["occluder"]
-            entry["blocked_objects"] = []  # 当前物体挡住的物体ID
-
-            # 如果该物体挡住了其他物体，更新全局遮挡图和自身blocked_objects
-            if occ["occluder"] is not None:
-                occlusion_graph[str(occ["occluder"])].append(str(i))
+            for occ in occlusion_info[i]:
+                entry["occlusions"].append({
+                    "by_id": occ["by_id"],
+                    "by_class": names.get(int(class_ids[occ["by_id"]]), f"id:{int(class_ids[occ['by_id']])}"),
+                    "type": occ["type"]
+                })
 
         data.append(entry)
 
-    # 如果有遮挡信息，则保存全局遮挡图
-    if occlusion_info:
-        final_json = {
-            "objects": data,
-            "occlusion_graph": occlusion_graph
-        }
-    else:
-        final_json = data  # 与原始行为保持一致
-
-    # 写入JSON文件
+    # 写入 JSON
     with open(output_path, "w") as f:
-        json.dump(final_json, f, indent=2)
+        json.dump(data, f, indent=2)
 
-    print(f"✅ Scene info saved to: {output_path}")
+    print(f"✅ 场景信息及遮挡关系已保存到: {output_path}")
+
 
 def save_json_from_detection(
     class_ids,
@@ -162,7 +140,7 @@ def save_json_from_detection(
     with open(output_path, "w") as f:
         json.dump(data, f, indent=2)
 
-    print(f"\n✅ Save successful: {output_path}")
+    print(f"\n Save successful: {output_path}")
 
 if __name__ == "__main__":
     # 示例调用
