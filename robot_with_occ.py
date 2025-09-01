@@ -2,7 +2,7 @@
 from utils.yolo_utils import detect_fruits, merge_detections_by_depth_and_proximity
 from utils.sam2_utils import segment_with_sam2
 from utils.coordinate import get_3d_coords_from_centers
-from utils.save_json import save_json_from_detection, save_scene_info_to_json
+from utils.save_json import save_scene_info_to_json
 from utils.rotate import extract_grasp_infos, infer_grasp_angle_and_width
 from xarm.wrapper import XArmAPI
 # from utils.API import subtasks_planner, trajectory_plan_on_real
@@ -28,7 +28,8 @@ def init_robot_and_camera(robot_ip="192.168.1.117", img_path="color.png", npz_pa
     arm.set_mode(0)      # Set to position control mode
 
     # Move robot to initial viewing position
-    arm.set_position(x=0, y=-346, z=500, roll=180, pitch=0, yaw=0, speed=80, wait=True)
+    # arm.set_position(x=0, y=-346, z=500, roll=180, pitch=0, yaw=0, speed=80, wait=True)
+    arm.set_position(x=-70, y=-500, z=500, roll=180, pitch=0, yaw=0, speed=80, wait=True)
     arm.set_gripper_position(850, wait=True)
 
     # ========== Step 2: RealSense Camera Initialization ==========
@@ -92,7 +93,10 @@ def compute_initial_affordance(image_rgb, masks, sam_centers):
     return affordance_masks, grasp_angles, widths, major_axes, minor_axes
 
 def detect_all_occlusions(depth_image, masks, affordance_masks, sam_centers, class_ids, class_names):
-    occlusion_info = {}
+    """
+    返回标准结构：{ i: [(j, occ_type), ...] }
+    """
+    occlusion_info = {i: [] for i in range(len(masks))}
     for i in range(len(masks)):
         ok, occ_idx, occ_type, contact_pair = check_occlusion(
             depth_image=depth_image,
@@ -105,23 +109,20 @@ def detect_all_occlusions(depth_image, masks, affordance_masks, sam_centers, cla
             class_names=class_names,
             self_idx=i
         )
-        occlusion_info[i] = {
-            "ok": ok,                         # 是否被遮挡
-            "occluder": occ_idx,             # 遮挡者id
-            "occ_type": occ_type,            # 遮挡类型
-            "contact_pair": contact_pair     # 如果是深度遮挡，返回触点
-        }
+        # ok=True 表示被遮挡（按你原来的语义）
+        if ok and occ_idx is not None and occ_idx != i:
+            occlusion_info[i].append((occ_idx, occ_type))
     return occlusion_info
 
 def find_mutual_occlusions(occlusion_info):
+    """
+    在标准结构上检查互相遮挡对：A被B、B也被A
+    """
     mutual_pairs = set()
-    for i, info in occlusion_info.items():
-        occ_idx = info["occluder"]
-        if occ_idx is not None:
-            # 检查反向是否成立
-            other_info = occlusion_info.get(occ_idx)
-            if other_info and other_info["occluder"] == i:
-                mutual_pairs.add(tuple(sorted((i, occ_idx))))
+    for i, rels in occlusion_info.items():
+        for j, _t in rels:
+            if i in [x for x,_ in occlusion_info.get(j, [])]:
+                mutual_pairs.add(tuple(sorted((i, j))))
     return list(mutual_pairs)
 
 def recompute_for_mutual_occlusions(image_rgb, depth_image, masks, sam_centers,
@@ -186,30 +187,27 @@ if __name__ == "__main__":
     # ========== Step 0: Paths and model configuration ==========
     yolo_model_path = "checkpoints/best_yolo.pt"
     sam2_model_path = "checkpoints/sam2_b.pt"
-    path_base = "test_imgs/img0"
+    path_base = "imgs/img_from_camera"
+    # path_base = "test_imgs/img0"
     img_path = f"{path_base}.png"
     npz_path = f"{path_base}.npz"
     json_path = f"{path_base}.json"
     yolo_model = YOLO(yolo_model_path)
     class_names = yolo_model.names
 
-    yolo_model = YOLO(yolo_model_path)
-    class_names = yolo_model.names
+    # if not os.path.exists(img_path) or not os.path.exists(npz_path):
+    #     raise FileNotFoundError("缺少图像或深度文件，请检查 img_path/npz_path")
 
+    # yolo_model = YOLO(yolo_model_path)
+    # class_names = yolo_model.names  # dict: id->name
 
-    if not os.path.exists(img_path) or not os.path.exists(npz_path):
-        raise FileNotFoundError("缺少图像或深度文件，请检查 img_path/npz_path")
+    # color_image = cv2.imread(img_path)
+    # data = np.load(npz_path)
+    # depth_image = data["depth"]
 
-    yolo_model = YOLO(yolo_model_path)
-    class_names = yolo_model.names  # dict: id->name
-
-    color_image = cv2.imread(img_path)
-    data = np.load(npz_path)
-    depth_image = data["depth"]
-
-    # # ========== Step 1: Robot Initialization and Image Capture ==========
-    # arm, image_rgb, depth_image, depth_intrin = init_robot_and_camera(img_path=img_path, npz_path=npz_path)
-    # print("Robot and camera initialized successfully.")
+    # ========== Step 1: Robot Initialization and Image Capture ==========
+    arm, image_rgb, depth_image, depth_intrin = init_robot_and_camera(img_path=img_path, npz_path=npz_path)
+    print("Robot and camera initialized successfully.")
 
     # ========== Step 2: Object Detection with YOLO ==========
     image_rgb, boxes, yolo_centers, class_ids, yolo_output_path = detect_fruits(img_path, yolo_model_path)
@@ -243,47 +241,39 @@ if __name__ == "__main__":
     )
 
     # ========== Step 5. 遮挡检测 ==========
-    occlusion_info = detect_all_occlusions(depth_image, masks, affordance_masks, sam_centers, class_ids, class_names)
+    occlusion_info = detect_all_occlusions(depth_image, masks, affordance_masks, sam_centers, mclass_ids, class_names)
 
     # ========== Step 6. 互相遮挡处理 ==========
     mutual_pairs = find_mutual_occlusions(occlusion_info)
     if mutual_pairs:
         print(f"[INFO] 检测到互相遮挡物体对: {mutual_pairs}")
         affordance_masks, grasp_angles, widths, major_axes, minor_axes = recompute_for_mutual_occlusions(
-            image_rgb, depth_image, masks, sam_centers, class_ids, class_names,
+            image_rgb, depth_image, masks, sam_centers, mclass_ids, class_names,
             mutual_pairs, major_axes, minor_axes, affordance_masks, grasp_angles, widths
         )
         graspable_flags, grasp_difficulties = compute_grasp_difficulty(masks, affordance_masks)
-    save_occlusion_info(occlusion_info, class_ids, class_names, "results/occlusion_info.json")
+    save_occlusion_info(occlusion_info, mclass_ids, class_names, "results/occlusion_info.json")
 
-    # # ========== Step 7. 计算3D世界坐标 ==========
-    # centers_3d = get_3d_coords_from_centers(npz_path, sam_centers, depth_intrin)
-    # code, pos = arm.get_position(is_radian=False)
-    # tcp_pose = pos[:6]
-    # world_coords = []
-    # for i, pt in enumerate(centers_3d):
-    #     if pt is None or np.allclose(pt, [0, 0, 0]):
-    #         print(f"[WARN] Object {i} invalid 3D point, skipped")
-    #         world_coords.append(None)
-    #         continue
-    #     camera_point_m = np.array(pt)
-    #     world_point = camera_to_world(camera_point_m, tcp_pose, verbose=True)
-    #     world_coords.append(world_point.tolist())
+    # ========== Step 7. 计算3D世界坐标 ==========
+    centers_3d = get_3d_coords_from_centers(npz_path, sam_centers, depth_intrin)
+    # [ 640x480  p[309.368 213.833]  f[608.463 606.873]  Inverse Brown Conrady [0 0 0 0 0] ]
+    code, pos = arm.get_position(is_radian=False)
+    tcp_pose = pos[:6]
+    world_coords = []
+    for i, pt in enumerate(centers_3d):
+        if pt is None or np.allclose(pt, [0, 0, 0]):
+            print(f"[WARN] Object {i} invalid 3D point, skipped")
+            world_coords.append(None)
+            continue
+        camera_point_m = np.array(pt)
+        world_point = camera_to_world(camera_point_m, tcp_pose, verbose=True)
+        world_coords.append(world_point.tolist())
 
-    # # ========== Step 8. 保存场景JSON ==========
-    # save_scene_info_to_json(json_path, class_ids, class_names, world_coords, grasp_angles, widths, occlusion_info)
+    # ========== Step 8. 保存场景JSON ==========
+    save_scene_info_to_json(class_ids=mclass_ids, coords_3d=world_coords, output_path=json_path, yolo_path=yolo_model_path, widths=widths, angles=grasp_angles, quaternions=None, occlusion_info=occlusion_info)
 
 
 
-    # # ========== Step 6: Save Scene to JSON ==========
-    # save_scene_info_to_json(
-    #     class_ids=class_ids,
-    #     coords_3d=world_coords,
-    #     output_path=json_path,
-    #     yolo_path=yolo_model_path,
-    #     widths=[info["width"] for info in grasp_infos],
-    #     angles=[info["angle"] for info in grasp_infos],
-    # )
 
     # # ========== Step 7: LLM Subtasks Planning ==========
     # load_dotenv()

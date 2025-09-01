@@ -202,83 +202,152 @@ def compute_grasp_difficulty(masks, affordance_masks):
             grasp_difficulties.append(1 - aff_pixels / total_pixels)
     return graspable_flags, grasp_difficulties
 
-# ---------- 保存遮挡关系 ----------
 def save_occlusion_info(occlusion_info, class_ids, class_names, output_path):
     """
-    保存遮挡关系列表，方便调试。
-    occlusion_info: { idx: [(other_idx, occ_type), ...] }
+    occlusion_info: { idx: [ (j, occ_type), (j, occ_type, extra), {'by': j, 'type': 'depth'}, ... ] }
+    class_ids: list/tuple 或 dict
+    class_names: list/tuple 或 dict
     """
+
+    def id_to_name(target):
+        # 目标索引/类别id/类别名 -> 类别名
+        if isinstance(target, int):
+            if isinstance(class_ids, (list, tuple)):
+                cid = class_ids[target] if 0 <= target < len(class_ids) else target
+            elif isinstance(class_ids, dict):
+                cid = class_ids.get(target, target)
+            else:
+                cid = target
+        else:
+            if isinstance(class_ids, dict) and target in class_ids:
+                cid = class_ids[target]
+            else:
+                cid = target
+
+        if isinstance(class_names, dict):
+            return str(class_names.get(cid, cid))
+        elif isinstance(class_names, (list, tuple)):
+            if isinstance(cid, int) and 0 <= cid < len(class_names):
+                return str(class_names[cid])
+            else:
+                return str(cid)
+        else:
+            return str(cid)
+
+    def parse_relation(rel):
+        """
+        将 relation 规范化为 (j, occ_type)；无法解析时返回 None
+        支持:
+          - (j, occ_type) / [j, occ_type]
+          - (j, occ_type, extra...) 取前两个
+          - {'by': j, 'type': t} 或 {'j': j, 'kind': t} 等
+        """
+        # tuple/list
+        if isinstance(rel, (tuple, list)):
+            if len(rel) >= 2:
+                j, occ_type = rel[0], rel[1]
+                return j, str(occ_type)
+            else:
+                print(f"[WARN] relation length < 2, skipped: {rel}")
+                return None
+
+        # dict
+        if isinstance(rel, dict):
+            j = rel.get('by')
+            if j is None:
+                j = rel.get('j', rel.get('idx', rel.get('id')))
+            occ_type = rel.get('type', rel.get('kind', rel.get('mode')))
+            if j is None or occ_type is None:
+                print(f"[WARN] relation dict missing keys, skipped: {rel}")
+                return None
+            return j, str(occ_type)
+
+        print(f"[WARN] unknown relation entry, skipped: {rel}")
+        return None
+
     occlusion_data = []
     for i, relations in occlusion_info.items():
-        obj_name = class_names[class_ids[i]]
-        entry = {
-            "object": obj_name,
-            "occluded_by": [
-                {"by": class_names[class_ids[j]], "type": occ_type}
-                for j, occ_type in relations
-            ]
-        }
-        occlusion_data.append(entry)
+        obj_name = id_to_name(i)
+        occluded_by_list = []
 
-    with open(output_path, "w") as f:
-        json.dump(occlusion_data, f, indent=2)
+        if relations is None:
+            print(f"[WARN] relations is None for object {i}")
+            relations = []
+
+        for rel in relations:
+            parsed = parse_relation(rel)
+            if parsed is None:
+                continue
+            j, occ_type = parsed
+            occluded_by_list.append({
+                "by": id_to_name(j),
+                "type": occ_type
+            })
+
+        occlusion_data.append({
+            "object": obj_name,
+            "occluded_by": occluded_by_list
+        })
+
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(occlusion_data, f, ensure_ascii=False, indent=2)
 
     print(f"✅ 遮挡信息已保存: {output_path}")
-
 
 if __name__ == "__main__":
     yolo_model_path = "checkpoints/best_yolo.pt"
     sam2_model_path = "checkpoints/sam2_b.pt"
-    # path_base = "imgs/img_from_camera"
-    path_base = "test_imgs/img4"
+    path_base = "imgs/img_from_camera"
+    # path_base = "test_imgs/img4"
     img_path = f"{path_base}.png"
     npz_path = f"{path_base}.npz"
 
     yolo_model = YOLO(yolo_model_path)
     class_names = yolo_model.names
     
-    # pipeline = rs.pipeline()
-    # config = rs.config()
-    # config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
-    # config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
-    # pipeline.start(config)
+    pipeline = rs.pipeline()
+    config = rs.config()
+    config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+    config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
+    pipeline.start(config)
 
-    # align = rs.align(rs.stream.color)
-    # # Warm up the camera
-    # for _ in range(10):
-    #     frames = pipeline.wait_for_frames()
+    align = rs.align(rs.stream.color)
+    # Warm up the camera
+    for _ in range(10):
+        frames = pipeline.wait_for_frames()
 
-    # # Capture one aligned RGB-D frame
-    # frames = pipeline.wait_for_frames()
+    # Capture one aligned RGB-D frame
+    frames = pipeline.wait_for_frames()
 
-    # aligned_frames = align.process(frames)
-    # color_frame = aligned_frames.get_color_frame()
-    # depth_frame = aligned_frames.get_depth_frame()
-    # if not color_frame or not depth_frame:
-    #     print("[ERROR] Failed to capture frames.")
-    #     exit(1)
-
-    # # Convert frames to numpy arrays
-    # color_image = np.asanyarray(color_frame.get_data())
-    # depth_image = np.asanyarray(depth_frame.get_data())
-    # # Save RGB and depth images
-    # success = cv2.imwrite(img_path, color_image)
-    # if not success:
-    #     print("[ERROR] RGB图像保存失败！")
-
-    # np.savez_compressed(npz_path, color=color_image, depth=depth_image)
-    # pipeline.stop()
-    
-    data = np.load(npz_path)
-    color_image = data["color"]
-    depth_image = data["depth"]
-
-    if not os.path.exists(img_path):
-        print(f"[ERROR] 图像路径不存在: {img_path}")
+    aligned_frames = align.process(frames)
+    color_frame = aligned_frames.get_color_frame()
+    depth_frame = aligned_frames.get_depth_frame()
+    if not color_frame or not depth_frame:
+        print("[ERROR] Failed to capture frames.")
         exit(1)
-    color_image = cv2.imread(img_path)
-    data = np.load(npz_path)
-    depth_image = data["depth"]
+
+    # Convert frames to numpy arrays
+    color_image = np.asanyarray(color_frame.get_data())
+    depth_image = np.asanyarray(depth_frame.get_data())
+    # Save RGB and depth images
+    success = cv2.imwrite(img_path, color_image)
+    if not success:
+        print("[ERROR] RGB图像保存失败！")
+
+    np.savez_compressed(npz_path, color=color_image, depth=depth_image)
+    pipeline.stop()
+    
+    # data = np.load(npz_path)
+    # color_image = data["color"]
+    # depth_image = data["depth"]
+
+    # if not os.path.exists(img_path):
+    #     print(f"[ERROR] 图像路径不存在: {img_path}")
+    #     exit(1)
+    # color_image = cv2.imread(img_path)
+    # data = np.load(npz_path)
+    # depth_image = data["depth"]
 
     # 目标检测
     image_rgb, boxes, yolo_centers, class_ids, yolo_output_path = detect_fruits(img_path, yolo_model_path)
@@ -345,10 +414,10 @@ if __name__ == "__main__":
         )
 
 
-    vis_img = draw_mask_boundaries(
-        image_rgb,
-        masks,
-        ids=list(range(len(masks))),
-        line_pairs=occlusion_line_pairs
-    )
-    cv2.imwrite("imgs/occluded.png", vis_img)
+    # vis_img = draw_mask_boundaries(
+    #     image_rgb,
+    #     masks,
+    #     ids=list(range(len(masks))),
+    #     line_pairs=occlusion_line_pairs
+    # )
+    # cv2.imwrite("imgs/occluded.png", vis_img)

@@ -1,79 +1,110 @@
 [
   {
     "id": 0,
-    "class": "redpepper",
+    "class": "potato",
     "coord_3d": [
-      127.359,
-      -440.374,
-      220.0
+      -73.619,
+      -446.126,
+      230.643
     ],
-    "gripper": 0.06,
-    "yaw": 109.29
+    "gripper": 0.05,
+    "yaw": 146.41,
+    "occlusions": []
   },
   {
     "id": 1,
-    "class": "potato",
+    "class": "strawberry",
     "coord_3d": [
-      14.458,
-      -483.375,
-      220.0
+      91.668,
+      -477.833,
+      224.201
     ],
-    "gripper": 0.04,
-    "yaw": 176.05
+    "gripper": 0.05,
+    "yaw": 63.24,
+    "occlusions": []
   },
   {
     "id": 2,
-    "class": "strawberry",
+    "class": "redpepper",
     "coord_3d": [
-      36.017,
-      -350.52,
-      220.0
+      13.072,
+      -382.578,
+      237.843
     ],
     "gripper": 0.05,
-    "yaw": 158.1
+    "yaw": 55.66,
+    "occlusions": []
   },
   {
     "id": 3,
-    "class": "greenlemon",
+    "class": "corn",
     "coord_3d": [
-      69.983,
-      -410.488,
-      220.0
+      -121.422,
+      -594.2,
+      198.925
     ],
     "gripper": 0.04,
-    "yaw": 107.73
+    "yaw": 120.03,
+    "occlusions": []
   },
   {
     "id": 4,
-    "class": "banana",
+    "class": "greenlemon",
     "coord_3d": [
-      39.362,
-      -467.238,
-      220.0
+      17.614,
+      -516.696,
+      226.114
     ],
-    "gripper": 0.07,
-    "yaw": 166.12
+    "gripper": 0.04,
+    "yaw": 142.99,
+    "occlusions": []
   },
   {
     "id": 5,
     "class": "redpepper",
     "coord_3d": [
-      86.738,
-      -504.709,
-      220.0
+      -65.103,
+      -372.874,
+      239.023
     ],
-    "gripper": 0.03,
-    "yaw": 175.92
+    "gripper": 0.06,
+    "yaw": 143.11,
+    "occlusions": []
   },
   {
     "id": 6,
-    "class": "lemon",
+    "class": "corn",
     "coord_3d": [
-      -14.11,
-      -401.402,
-      220.0
+      123.856,
+      -393.025,
+      219.604
     ],
     "gripper": 0.04,
-    "yaw": 69.39
+    "yaw": 98.64,
+    "occlusions": []
+  },
+  {
+    "id": 7,
+    "class": "tomato",
+    "coord_3d": [
+      -65.103,
+      -372.874,
+      239.023
+    ],
+    "gripper": 0.06,
+    "yaw": 143.09,
+    "occlusions": []
+  },
+  {
+    "id": 8,
+    "class": "banana",
+    "coord_3d": [
+      -14.838,
+      -500.529,
+      204.254
+    ],
+    "gripper": 0.08,
+    "yaw": 68.28,
+    "occlusions": []
   }
 ]

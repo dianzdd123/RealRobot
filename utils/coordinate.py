@@ -1,5 +1,7 @@
 import numpy as np
 import pyrealsense2 as rs
+from .occluded import robust_center_depth
+
 
 # def get_3d_coords_from_centers(npz_path, pixel_points, depth_intrin):
 #     """
@@ -102,7 +104,7 @@ def get_3d_coords_from_centers(npz_path, pixel_points, depth_intrin):
             print(f"超出图像范围: ({u}, {v})")
             continue
 
-        depth_mm = int(depth_image[v, u])
+        depth_mm = robust_center_depth(depth_image, u, v, win=5)
         if depth_mm <= 0:
             coords_3d.append(None)
             print(f"无效深度: ({u}, {v})")

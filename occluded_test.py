@@ -282,7 +282,7 @@ if __name__ == "__main__":
             all_masks=masks,
             all_affordance_masks=affordance_masks,
             debug=True,
-            class_ids=mclass_ids,     # 注意与 mboxes 对齐后的 ids
+            class_ids=mclass_ids,
             class_names=class_names,
             self_idx=idx
         )

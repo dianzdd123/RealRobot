@@ -25,7 +25,8 @@ def init_robot_and_camera(robot_ip="192.168.1.117", img_path="color.png", npz_pa
     arm.set_mode(0)      # Set to position control mode
 
     # Move robot to initial viewing position
-    arm.set_position(x=0, y=-346, z=500, roll=180, pitch=0, yaw=0, speed=80, wait=True)
+    # arm.set_position(x=0, y=-346, z=500, roll=180, pitch=0, yaw=0, speed=80, wait=True)
+    arm.set_position(x=-70, y=-500, z=500, roll=180, pitch=0, yaw=0, speed=80, wait=True)
     arm.set_gripper_position(850, wait=True)
 
     # ========== Step 2: RealSense Camera Initialization ==========
@@ -129,6 +130,7 @@ if __name__ == "__main__":
         world_point = camera_to_world(
             camera_point_m,
             tcp_pose,
+            min_z_mm=220,
             verbose=True  # optionalgra
         )
         world_coords.append(world_point.tolist())

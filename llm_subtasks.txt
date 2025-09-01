@@ -1,11 +1,4 @@
-Move to a position directly above the lemon.
-
-Descend vertically to grasp the lemon.
-
-Lift the lemon vertically to clear any obstacles.
-
-Move horizontally to a position directly above the target location, which is to the left of the banana.
-
-Descend vertically to place the lemon to the left of the banana.
-
-Release the lemon gently at the target location.
+Move to a position directly above the red pepper.  
+Descend vertically until you are close enough to grasp the red pepper.  
+Grasp the red pepper securely.  
+Lift the red pepper vertically to a safe height.
