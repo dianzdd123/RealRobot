@@ -5,10 +5,13 @@ from utils.coordinate import get_3d_coords_from_centers
 from utils.save_json import save_scene_info_to_json
 from utils.rotate import extract_grasp_infos, infer_grasp_angle_and_width
 from xarm.wrapper import XArmAPI
-# from utils.API import subtasks_planner, trajectory_plan_on_real
+from utils.API import subtasks_planner, trajectory_plan_on_real
 from utils.camera_to_world import camera_to_world
 from utils.traj_execute import execute
 from utils.affordance_area import compute_affordance_mask, compute_affordance_striped_fullwidth
+from openai import OpenAI
+from dotenv import load_dotenv
+import speech_recognition as sr
 
 # Import standard libraries
 import pyrealsense2 as rs
@@ -129,7 +132,7 @@ def recompute_for_mutual_occlusions(image_rgb, depth_image, masks, sam_centers,
                                     class_ids, class_names, mutual_pairs,
                                     major_axes, minor_axes, affordance_masks,
                                     grasp_angles, widths):
-    MIN_MASK_AREA = 10
+    MIN_MASK_AREA = 100
     for idx1, idx2 in mutual_pairs:
         for idx in [idx1, idx2]:
             new_mask, _ = compute_affordance_striped_fullwidth(
@@ -157,6 +160,15 @@ def recompute_for_mutual_occlusions(image_rgb, depth_image, masks, sam_centers,
                 print(f"[WARN] Object {idx} 新affordance太小({nonzero}px)，跳过更新，继续用原始mask")
                 continue
 
+            # Step 1: 判断重算后每个物体是否可抓
+            graspable_flags, grasp_difficulties = compute_grasp_difficulty(masks, affordance_masks)
+
+            # Step 2: 删除已变得可抓的物体对应的遮挡信息
+            for i in range(len(masks)):
+                if graspable_flags[i] and i in occlusion_info:
+                    print(f"[INFO] 物体 {i} 已可抓，移除遮挡记录")
+                    del occlusion_info[i]
+
             # 更新affordance mask
             affordance_masks[idx] = new_mask
             # 更新抓取角度和宽度
@@ -170,6 +182,39 @@ def recompute_for_mutual_occlusions(image_rgb, depth_image, masks, sam_centers,
 
     return affordance_masks, grasp_angles, widths, major_axes, minor_axes
 
+def get_mask_centers(masks):
+    centers = []
+    for mask in masks:
+        ys, xs = np.nonzero(mask)
+        if len(xs) == 0 or len(ys) == 0:
+            centers.append(None)
+        else:
+            cx = int(np.mean(xs))
+            cy = int(np.mean(ys))
+            centers.append([cx, cy])
+    return centers
+
+def listen_and_transcribe():
+        recognizer = sr.Recognizer()
+        mic = sr.Microphone()
+        print("🎙️  请输入语音指令（请开始说话）")
+
+        with mic as source:
+            recognizer.adjust_for_ambient_noise(source)
+            audio = recognizer.listen(source)
+
+        print("🧠  正在识别语音...")
+        try:
+            text = recognizer.recognize_google(audio, language='en-US')
+            print(f"✅  识别结果: {text}")
+            return text
+        except sr.UnknownValueError:
+            print("❌ 无法识别语音")
+            return None
+        except sr.RequestError as e:
+            print(f"❌ 请求错误: {e}")
+            return None
+        
 if __name__ == "__main__": 
     '''
     System Workflow:
@@ -251,8 +296,14 @@ if __name__ == "__main__":
             image_rgb, depth_image, masks, sam_centers, mclass_ids, class_names,
             mutual_pairs, major_axes, minor_axes, affordance_masks, grasp_angles, widths
         )
+        sam_centers = get_mask_centers(affordance_masks)
         graspable_flags, grasp_difficulties = compute_grasp_difficulty(masks, affordance_masks)
-    save_occlusion_info(occlusion_info, mclass_ids, class_names, "results/occlusion_info.json")
+        for i in range(len(masks)):
+            if graspable_flags[i] and i in occlusion_info:
+                print(f"[INFO] 物体 {i} 已可抓，移除遮挡记录")
+                del occlusion_info[i]
+    else:
+        graspable_flags, grasp_difficulties = compute_grasp_difficulty(masks, affordance_masks)
 
     # ========== Step 7. 计算3D世界坐标 ==========
     centers_3d = get_3d_coords_from_centers(npz_path, sam_centers, depth_intrin)
@@ -266,32 +317,51 @@ if __name__ == "__main__":
             world_coords.append(None)
             continue
         camera_point_m = np.array(pt)
-        world_point = camera_to_world(camera_point_m, tcp_pose, verbose=True)
+        world_point = camera_to_world(camera_point_m, tcp_pose, min_z_mm=300, verbose=True)
         world_coords.append(world_point.tolist())
 
     # ========== Step 8. 保存场景JSON ==========
-    save_scene_info_to_json(class_ids=mclass_ids, coords_3d=world_coords, output_path=json_path, yolo_path=yolo_model_path, widths=widths, angles=grasp_angles, quaternions=None, occlusion_info=occlusion_info)
+    save_scene_info_to_json(
+        class_ids=mclass_ids,
+        coords_3d=world_coords,
+        output_path=json_path,
+        yolo_path=yolo_model_path,
+        widths=widths,
+        angles=grasp_angles,
+        quaternions=None,
+        occlusion_info=occlusion_info,
+        graspable_flags=graspable_flags
+    )
 
+    # ========== Step 7: LLM Subtasks Planning ==========
+    load_dotenv()
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    user_input = input("Enter your robot instruction: ")
+    '''
+    user_input = listen_and_transcribe()
 
+    if not user_input:
+        print("语音识别失败，请手动输入指令：")
+        user_input = input("Text: ")
+    else:
+        print(f"你说的是：{user_input}")
+        confirm = input("是否确认该指令？(y/n): ")
+        if confirm.lower() != 'y':
+            user_input = input("请重新输入文本指令：")
+    '''
+    task_description = subtasks_planner(user_input)
+    subtasks_file = "llm_subtasks.txt"
+    with open(subtasks_file, "w") as f:
+        f.write(task_description)
 
-
-    # # ========== Step 7: LLM Subtasks Planning ==========
-    # load_dotenv()
-    # client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    # user_input = input("Enter your robot instruction: ")
-    # task_description = subtasks_planner(user_input)
-    # subtasks_file = "llm_subtasks.txt"
-    # with open(subtasks_file, "w") as f:
-    #     f.write(task_description)
-
-    # # ========== Step 8: Execute Trajectory ==========
-    # trajectory_json_path = "trajectory_plan.json"
-    # trajectory_plan_on_real(
-    #     subtask_txt_path=subtasks_file,
-    #     json_path=json_path,
-    #     save_json_path=trajectory_json_path
-    # )
-    # execute(trajectory_json_path, arm)
+    # ========== Step 8: Execute Trajectory ==========
+    trajectory_json_path = "trajectory_plan.json"
+    trajectory_plan_on_real(
+        subtask_txt_path=subtasks_file,
+        json_path=json_path,
+        save_json_path=trajectory_json_path
+    )
+    execute(trajectory_json_path, arm)
 
 
     

@@ -1,110 +1,53 @@
 [
   {
     "id": 0,
-    "class": "potato",
+    "class": "redpepper",
     "coord_3d": [
-      -73.619,
-      -446.126,
-      230.643
+      52.696,
+      -474.619,
+      300.0
     ],
-    "gripper": 0.05,
-    "yaw": 146.41,
-    "occlusions": []
-  },
-  {
-    "id": 1,
-    "class": "strawberry",
-    "coord_3d": [
-      91.668,
-      -477.833,
-      224.201
-    ],
-    "gripper": 0.05,
-    "yaw": 63.24,
+    "graspable": true,
+    "gripper": 0.011,
+    "yaw": 119.24,
     "occlusions": []
   },
   {
     "id": 2,
-    "class": "redpepper",
+    "class": "banana",
     "coord_3d": [
-      13.072,
-      -382.578,
-      237.843
+      -115.453,
+      -520.696,
+      300.0
     ],
-    "gripper": 0.05,
-    "yaw": 55.66,
-    "occlusions": []
+    "graspable": true,
+    "gripper": 0.0059,
+    "yaw": 116.26,
+    "occlusions": [
+      {
+        "by_id": 1,
+        "by_class": "corn",
+        "type": "depth"
+      }
+    ]
   },
   {
     "id": 3,
-    "class": "corn",
-    "coord_3d": [
-      -121.422,
-      -594.2,
-      198.925
-    ],
-    "gripper": 0.04,
-    "yaw": 120.03,
-    "occlusions": []
-  },
-  {
-    "id": 4,
-    "class": "greenlemon",
-    "coord_3d": [
-      17.614,
-      -516.696,
-      226.114
-    ],
-    "gripper": 0.04,
-    "yaw": 142.99,
-    "occlusions": []
-  },
-  {
-    "id": 5,
-    "class": "redpepper",
-    "coord_3d": [
-      -65.103,
-      -372.874,
-      239.023
-    ],
-    "gripper": 0.06,
-    "yaw": 143.11,
-    "occlusions": []
-  },
-  {
-    "id": 6,
-    "class": "corn",
-    "coord_3d": [
-      123.856,
-      -393.025,
-      219.604
-    ],
-    "gripper": 0.04,
-    "yaw": 98.64,
-    "occlusions": []
-  },
-  {
-    "id": 7,
-    "class": "tomato",
-    "coord_3d": [
-      -65.103,
-      -372.874,
-      239.023
-    ],
-    "gripper": 0.06,
-    "yaw": 143.09,
-    "occlusions": []
-  },
-  {
-    "id": 8,
     "class": "banana",
     "coord_3d": [
-      -14.838,
-      -500.529,
-      204.254
+      -22.621,
+      -590.82,
+      300.0
     ],
-    "gripper": 0.08,
-    "yaw": 68.28,
-    "occlusions": []
+    "graspable": true,
+    "gripper": 0.0066,
+    "yaw": -163.15,
+    "occlusions": [
+      {
+        "by_id": 1,
+        "by_class": "corn",
+        "type": "depth"
+      }
+    ]
   }
 ]

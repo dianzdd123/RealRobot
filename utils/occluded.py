@@ -160,7 +160,7 @@ def check_occlusion(depth_image, mask, affordance_mask, center,
             min_aff = np.percentile(aff_depths, 30)
             min_other = np.percentile(other_depths, 30)
 
-            if min_other <= min_aff + 10:
+            if min_other <= min_aff + 20:
                 if debug:
                     name_i = class_names[class_ids[self_idx]]
                     name_j = class_names[class_ids[j]]

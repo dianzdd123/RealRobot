@@ -11,7 +11,8 @@ def save_scene_info_to_json(
     widths=None,
     angles=None,
     quaternions=None,
-    occlusion_info=None
+    occlusion_info=None,
+    graspable_flags=None
 ):
     """
     保存场景中每个物体的信息为 JSON 文件。
@@ -20,7 +21,9 @@ def save_scene_info_to_json(
       - occlusion_info 支持 [(j, type)] 或 [{'by_id': j, 'type': t}] 或 [{'by': j, 'type': t}]
     """
 
-    # 载入类别名称映射（若不给 yolo_path 就用空映射）
+    import os, json
+    from ultralytics import YOLO
+
     names = {}
     if yolo_path:
         try:
@@ -36,43 +39,35 @@ def save_scene_info_to_json(
         except Exception:
             return str(cid)
 
-    # 统一长度，避免索引越界
     N = len(class_ids)
-    def safe_len(lst):
-        return 0 if lst is None else len(lst)
-
-    # 将可选列表补足或裁剪到 N（不对 coords_3d 操作，coords_3d 保持原样）
     def fix_len(arr, n, fill=None):
         if arr is None:
             return [fill] * n
         arr = list(arr)
         if len(arr) < n:
-            arr = arr + [fill] * (n - len(arr))
+            arr += [fill] * (n - len(arr))
         elif len(arr) > n:
             arr = arr[:n]
         return arr
 
-    widths       = fix_len(widths, N, fill=None)
-    angles       = fix_len(angles, N, fill=None)
-    quaternions  = fix_len(quaternions, N, fill=None)
+    widths       = fix_len(widths, N)
+    angles       = fix_len(angles, N)
+    quaternions  = fix_len(quaternions, N)
+    graspable_flags = fix_len(graspable_flags, N, fill=True)
 
-    # 解析遮挡关系条目 -> (by_id:int, type:str)；无法解析返回 None
     def parse_occ_item(item):
-        # 1) 元组/列表，如 (j, "depth") 或 [j, "proximity", ...] 取前两个
         if isinstance(item, (tuple, list)):
             if len(item) >= 2:
                 return int(item[0]), str(item[1])
             return None
-        # 2) 字典
         if isinstance(item, dict):
-            # 兼容 by_id / by / idx / id
             j = item.get("by_id", item.get("by", item.get("idx", item.get("id"))))
             t = item.get("type", item.get("kind", item.get("mode")))
             if j is None or t is None:
                 return None
             try:
                 j = int(j)
-            except Exception:
+            except:
                 return None
             return j, str(t)
         return None
@@ -81,9 +76,7 @@ def save_scene_info_to_json(
     skipped_none = 0
     out_of_range_occ = 0
 
-    # 逐个目标写入
     for i in range(N):
-        # coords_3d 可能长度与 N 不一致，这里做安全读取
         if i >= len(coords_3d):
             print(f"[WARN] coords_3d 长度不足：i={i}, len(coords_3d)={len(coords_3d)}，跳过该目标")
             continue
@@ -93,7 +86,6 @@ def save_scene_info_to_json(
             skipped_none += 1
             continue
 
-        # 坐标规整
         try:
             x, y, z = float(coord[0]), float(coord[1]), float(coord[2])
         except Exception:
@@ -104,27 +96,26 @@ def save_scene_info_to_json(
         entry = {
             "id": i,
             "class": id_to_name(int(cls_id)) if isinstance(cls_id, (int, np.integer)) or str(cls_id).isdigit() else id_to_name(cls_id),
-            "coord_3d": [round(x, 3), round(y, 3), round(z, 3)]
+            "coord_3d": [round(x, 3), round(y, 3), round(z, 3)],
+            "graspable": bool(graspable_flags[i])
         }
 
-        # 可选字段
         if widths[i] is not None:
             try:
                 entry["gripper"] = round(float(widths[i]), 4)
-            except Exception:
+            except:
                 pass
         if angles[i] is not None:
             try:
                 entry["yaw"] = round(float(angles[i]), 2)
-            except Exception:
+            except:
                 pass
         if quaternions[i] is not None:
             try:
                 entry["quat"] = [round(float(q), 4) for q in quaternions[i]]
-            except Exception:
+            except:
                 pass
 
-        # 遮挡信息（仅记录有效 by_id 且在范围内的）
         entry["occlusions"] = []
         if isinstance(occlusion_info, dict) and i in occlusion_info:
             rels = occlusion_info[i] or []
@@ -145,7 +136,6 @@ def save_scene_info_to_json(
 
         data.append(entry)
 
-    # 输出目录
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)

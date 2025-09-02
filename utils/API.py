@@ -4,32 +4,38 @@ from openai import OpenAI
 from dotenv import load_dotenv
 import re
 
-# 初始化 API
 load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+dynamic_free_pos = [-210, -500, 300]  # 你可以从其他模块传入
 
 def subtasks_planner(user_input):
     # LLM 理解指令并输出任务步骤（自然语言描述）
     messages = [
     {
         "role": "system",
-        "content": (
-            "You are a robot assistant that understands and decomposes natural language instructions "
-            "into a series of clear, structured subtasks.\n\n"
-            "Your goal is to interpret the user's command and output a step-by-step plan, where each step describes:\n"
-            "- what action to perform (e.g., move, pick up, place, rotate)\n"
-            "- which object is being manipulated\n"
-            "- what the goal or target is (e.g., place location, reference object)\n"
-            "- any spatial relations or constraints (e.g., 'to the right of the apple')\n\n"
-            "The output should be in plain text, without JSON, bullet points, or Markdown. Each step should be written as a clear sentence and in different linemov.\n\n"
-            "Important: The subtask plan is intended to be used as the **foundation for robot trajectory generation**, so your steps must be precise and executable.\n\n"
-            "Also, if a task involves approaching an object, the optimal method is usually to:\n"
-            "- First move to a position directly above the object\n"
-            "- Then descend vertically for grasping\n"
-            "The same logic applies when placing an object near a target.\n\n"
-            "Use this structured and pragmatic logic to output the most reliable subtask plan."
-        )
-    },
+            "content": (
+                "You are a robot assistant that understands and decomposes natural language instructions "
+                "into a series of clear, structured subtasks.\n\n"
+                "Your goal is to interpret the user's command and output a step-by-step plan, where each step describes:\n"
+                "- what action to perform (e.g., move, pick up, place, rotate)\n"
+                "- which object is being manipulated\n"
+                "- what the goal or target is (e.g., place location, reference object)\n"
+                "- any spatial relations or constraints (e.g., 'to the right of the apple')\n\n"
+                "The output should be in plain text, without JSON, bullet points, or Markdown. Each step should be written as a clear sentence and in different lines.\n\n"
+                "Important: The subtask plan is intended to be used as the foundation for robot trajectory generation, "
+                "so your steps must be precise and executable.\n\n"
+                "Also, if a task involves approaching an object, the optimal method is usually to:\n"
+                "- First move to a position directly above the object\n"
+                "- Then descend vertically for grasping\n"
+                "The same logic applies when placing an object near a target.\n\n"
+                "Additional guidance:\n"
+                "- If the target object may be occluded by other objects, add the necessary steps to remove the occluding items first.\n"
+                "- Use temporary placement areas to store occluding objects before proceeding to the main task.\n"
+                "- If the target object is not mentioned clearly, you may pick the most accessible one from the top of the pile.\n\n"
+                "Use this structured and pragmatic logic to output the most reliable subtask plan."
+            )
+        },
     {
         "role": "user",
         "content": user_input
@@ -47,7 +53,7 @@ def subtasks_planner(user_input):
 
     return response.choices[0].message.content
 
-def trajectory_plan(subtask_txt_path="llm_subtasks.txt", grasp_json_path="grasp_infos.json", save_json_path="trajectory_plan.json"):
+def trajectory_plan_on_sim(subtask_txt_path="llm_subtasks.txt", grasp_json_path="grasp_infos.json", save_json_path="trajectory_plan.json"):
     """
     基于任务拆解和抓取信息，调用 LLM 生成自然语言描述轨迹，并提取关键字段保存为 JSON 文件。
 
@@ -238,19 +244,27 @@ def trajectory_plan_on_real(subtask_txt_path="llm_subtasks.txt", json_path="gras
             "role": "system",
             "content": (
                 "You are a robot trajectory planner. Based on the user's task breakdown and the sensed object information, "
-                "generate a detailed motion plan for the robot arm to follow.\n"
-                "About relative position, consider world frame x-axis positive direction is nearest user and y-axis positive direction is right hand"
-                "Each step must include the following fields in plain text format:\n\n"
+                "generate a detailed motion plan for the robot arm to follow.\n\n"
+                "Each step must follow this format (in plain text, without Markdown):\n"
                 "Step N:\n"
                 " position: (x, y, z)\n"
-                " yaw: n\n"
-                " gripper: 0 or 850\n"
-                " 0 means gripper close totally and 850 means gripper open"
-                "Use this exact format, without Markdown symbols like ** or #.\n"
-                "Units are in millimeters (mm) by default.\n"
-                "If any field is missing, the system will use defaults (roll=180).\n"
-                "Ensure that the motion trajectory covers a sufficiently wide range in 3D space, "
-                "so that the robot arm demonstrates meaningful movement between steps (avoid tiny or redundant displacements).\n"
+                " yaw: float\n"
+                " gripper: 250 or 850\n"
+                " 250 = close gripper, 850 = open gripper\n\n"
+                "Use world coordinate frame: +x is toward user, +y is robot's right.\n"
+                "Use meaningful 3D motions — do not repeat tiny displacements.\n\n"
+                f"If an object must be moved due to occlusion, place it temporarily at {tuple(dynamic_free_pos)}.\n"
+                " For all **placing motions**, follow this two-step approach:"
+                "- First move to a position directly above the placing location (about 80 mm higher)"
+                "- Then descend vertically to the target position and open the gripper to release the object"
+
+                "Always explicitly add:"
+                "- A step to open the gripper before releasing the object (gripper: 850)"
+                "- A safe vertical approach when placing, to avoid collisions"
+                "Make sure to:\n"
+                "- Approach objects from above first\n"
+                "- Lift objects before moving horizontally\n"
+                "- Avoid colliding with nearby objects"
             )
         },
         {
@@ -262,7 +276,7 @@ def trajectory_plan_on_real(subtask_txt_path="llm_subtasks.txt", json_path="gras
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=messages,
-        temperature=0.4
+        temperature=0.2
     )
 
     llm_output = response.choices[0].message.content
@@ -373,11 +387,11 @@ def roborefer_prompts(user_text: str) -> list:
     return prompts
 
 if __name__ == "__main__":
-    # user_input = input("Enter your robot instruction: ")
-    # task_description = subtasks_planner(user_input)
-    # # Save parsed sub-tasks
-    # with open("llm_subtasks.txt", "w") as f:
-    #     f.write(task_description)
-    # trajectory_plan_on_real2(subtask_txt_path="llm_subtasks.txt", json_path="imgs/img_from_camera.json", save_json_path="trajectory_plan.json")
-    user_cmd = "grasp farest banana to corn left"
-    prompt = roborefer_prompts(user_cmd)
+    user_input = input("Enter your robot instruction: ")
+    task_description = subtasks_planner(user_input)
+    # Save parsed sub-tasks
+    with open("llm_subtasks.txt", "w") as f:
+        f.write(task_description)
+    trajectory_plan_on_real(subtask_txt_path="llm_subtasks.txt", json_path="imgs/img_from_camera.json", save_json_path="trajectory_plan.json")
+    # user_cmd = "grasp farest banana to corn left"
+    # prompt = roborefer_prompts(user_cmd)

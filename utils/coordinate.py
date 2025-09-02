@@ -105,10 +105,11 @@ def get_3d_coords_from_centers(npz_path, pixel_points, depth_intrin):
             continue
 
         depth_mm = robust_center_depth(depth_image, u, v, win=5)
-        if depth_mm <= 0:
+        if depth_mm is None or depth_mm <= 0:
             coords_3d.append(None)
-            print(f"无效深度: ({u}, {v})")
+            print(f"[WARN] 无效深度: ({u}, {v}) → {depth_mm}")
             continue
+
 
         depth_m = depth_mm / 1000.0
         coord_3d = rs.rs2_deproject_pixel_to_point(depth_intrin, [u, v], depth_m)
