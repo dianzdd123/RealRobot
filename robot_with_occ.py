@@ -163,11 +163,11 @@ def recompute_for_mutual_occlusions(image_rgb, depth_image, masks, sam_centers,
             # Step 1: 判断重算后每个物体是否可抓
             graspable_flags, grasp_difficulties = compute_grasp_difficulty(masks, affordance_masks)
 
-            # Step 2: 删除已变得可抓的物体对应的遮挡信息
-            for i in range(len(masks)):
-                if graspable_flags[i] and i in occlusion_info:
-                    print(f"[INFO] 物体 {i} 已可抓，移除遮挡记录")
-                    del occlusion_info[i]
+            # # Step 2: 删除已变得可抓的物体对应的遮挡信息
+            # for i in range(len(masks)):
+            #     if graspable_flags[i] and i in occlusion_info:
+            #         print(f"[INFO] 物体 {i} 已可抓，移除遮挡记录")
+            #         del occlusion_info[i]
 
             # 更新affordance mask
             affordance_masks[idx] = new_mask
@@ -298,10 +298,10 @@ if __name__ == "__main__":
         )
         sam_centers = get_mask_centers(affordance_masks)
         graspable_flags, grasp_difficulties = compute_grasp_difficulty(masks, affordance_masks)
-        for i in range(len(masks)):
-            if graspable_flags[i] and i in occlusion_info:
-                print(f"[INFO] 物体 {i} 已可抓，移除遮挡记录")
-                del occlusion_info[i]
+        # for i in range(len(masks)):
+        #     if graspable_flags[i] and i in occlusion_info:
+        #         print(f"[INFO] 物体 {i} 已可抓，移除遮挡记录")
+        #         del occlusion_info[i]
     else:
         graspable_flags, grasp_difficulties = compute_grasp_difficulty(masks, affordance_masks)
 

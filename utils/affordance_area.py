@@ -203,14 +203,14 @@ def visualize_graspables_fullmask(
     for i, m in enumerate(masks):
         overlay = vis.copy()
         ys, xs = np.nonzero(m)
-        overlay[ys, xs] = (overlay[ys, xs] * 0.5 + np.array((0, 255, 0)) * 0.5).astype(np.uint8)
+        overlay[ys, xs] = (overlay[ys, xs] * 0.5 + np.array((200, 0, 0)) * 0.5).astype(np.uint8)
         vis = overlay
 
     # === 2. 绘制可抓取区域，蓝色高亮 ===
     for i, g in enumerate(graspables):
         overlay = vis.copy()
         ys, xs = np.nonzero(g)
-        overlay[ys, xs] = (overlay[ys, xs] * 0.3 + np.array((0, 0, 255)) * 0.7).astype(np.uint8)
+        overlay[ys, xs] = (overlay[ys, xs] * 0.3 + np.array((0, 200, 0)) * 0.7).astype(np.uint8)
         vis = overlay
 
         # === 3. 绘制物体标签 ===

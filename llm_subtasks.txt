@@ -1,4 +1,4 @@
-Move to a position directly above the corn.  
-Descend vertically until the gripper is in position to grasp the corn.  
-Close the gripper to securely hold the corn.  
-Lift the corn vertically to clear any surrounding objects.
+Move to a position directly above the green lemon.  
+Descend vertically until you are close enough to grasp the green lemon.  
+Grasp the green lemon securely.  
+Lift the green lemon vertically upward.

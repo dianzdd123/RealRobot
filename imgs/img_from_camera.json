@@ -1,28 +1,111 @@
 [
   {
     "id": 0,
-    "class": "redpepper",
+    "class": "potato",
     "coord_3d": [
-      52.696,
-      -474.619,
+      66.941,
+      -603.145,
       300.0
     ],
     "graspable": true,
-    "gripper": 0.011,
-    "yaw": 119.24,
+    "gripper": 0.0113,
+    "yaw": -170.52,
     "occlusions": []
   },
   {
     "id": 2,
-    "class": "banana",
+    "class": "tomato",
     "coord_3d": [
-      -115.453,
-      -520.696,
+      -103.731,
+      -565.777,
       300.0
     ],
     "graspable": true,
-    "gripper": 0.0059,
-    "yaw": 116.26,
+    "gripper": 0.0126,
+    "yaw": 68.27,
+    "occlusions": []
+  },
+  {
+    "id": 3,
+    "class": "lemon",
+    "coord_3d": [
+      -25.847,
+      -616.211,
+      300.0
+    ],
+    "graspable": true,
+    "gripper": 0.0074,
+    "yaw": 67.42,
+    "occlusions": [
+      {
+        "by_id": 4,
+        "by_class": "greenlemon",
+        "type": "depth"
+      }
+    ]
+  },
+  {
+    "id": 4,
+    "class": "greenlemon",
+    "coord_3d": [
+      -45.371,
+      -540.994,
+      300.0
+    ],
+    "graspable": true,
+    "gripper": 0.0081,
+    "yaw": 123.48,
+    "occlusions": [
+      {
+        "by_id": 2,
+        "by_class": "tomato",
+        "type": "proximity"
+      }
+    ]
+  },
+  {
+    "id": 5,
+    "class": "redpepper",
+    "coord_3d": [
+      27.815,
+      -479.525,
+      300.0
+    ],
+    "graspable": true,
+    "gripper": 0.0112,
+    "yaw": 175.83,
+    "occlusions": []
+  },
+  {
+    "id": 6,
+    "class": "carrot",
+    "coord_3d": [
+      76.936,
+      -470.185,
+      300.0
+    ],
+    "graspable": true,
+    "gripper": 0.0062,
+    "yaw": 92.52,
+    "occlusions": [
+      {
+        "by_id": 5,
+        "by_class": "redpepper",
+        "type": "depth"
+      }
+    ]
+  },
+  {
+    "id": 7,
+    "class": "banana",
+    "coord_3d": [
+      -134.665,
+      -433.37,
+      300.0
+    ],
+    "graspable": true,
+    "gripper": 0.0057,
+    "yaw": 70.76,
     "occlusions": [
       {
         "by_id": 1,
@@ -32,16 +115,16 @@
     ]
   },
   {
-    "id": 3,
+    "id": 8,
     "class": "banana",
     "coord_3d": [
-      -22.621,
-      -590.82,
+      -48.644,
+      -354.426,
       300.0
     ],
     "graspable": true,
-    "gripper": 0.0066,
-    "yaw": -163.15,
+    "gripper": 0.0059,
+    "yaw": 164.19,
     "occlusions": [
       {
         "by_id": 1,
