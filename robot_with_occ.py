@@ -317,7 +317,7 @@ if __name__ == "__main__":
             world_coords.append(None)
             continue
         camera_point_m = np.array(pt)
-        world_point = camera_to_world(camera_point_m, tcp_pose, min_z_mm=300, verbose=True)
+        world_point = camera_to_world(camera_point_m, tcp_pose, min_z_mm=225, verbose=True)
         world_coords.append(world_point.tolist())
 
     # ========== Step 8. 保存场景JSON ==========
