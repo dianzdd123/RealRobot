@@ -1,4 +1,4 @@
-Move to a position directly above the banana.  
-Descend vertically until the gripper is positioned around the banana.  
-Close the gripper to securely grasp the banana.  
-Ascend vertically to lift the banana off the surface.
+First, move to a position directly above the banana.  
+Then, descend vertically until you are close enough to grasp the banana.  
+Next, securely grasp the banana.  
+Finally, lift the banana vertically upwards to a safe height.

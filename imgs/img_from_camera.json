@@ -1,79 +1,79 @@
 [
   {
     "id": 0,
-    "class": "greenlemon",
+    "class": "tomato",
     "coord_3d": [
-      -15.018,
-      -550.791,
-      225.0
-    ],
-    "graspable": true,
-    "gripper": 0.0078,
-    "yaw": 122.26,
-    "occlusions": [
-      {
-        "by_id": 2,
-        "by_class": "tomato",
-        "type": "proximity"
-      }
-    ]
-  },
-  {
-    "id": 1,
-    "class": "potato",
-    "coord_3d": [
-      108.201,
-      -581.521,
-      226.616
+      -47.533,
+      -449.27,
+      238.584
     ],
     "graspable": true,
     "gripper": 0.0122,
-    "yaw": -144.3,
-    "occlusions": [
-      {
-        "by_id": 6,
-        "by_class": "carrot",
-        "type": "proximity"
-      }
-    ]
+    "yaw": 89.71,
+    "occlusions": []
   },
   {
-    "id": 2,
-    "class": "tomato",
+    "id": 1,
+    "class": "redpepper",
     "coord_3d": [
-      -65.434,
-      -587.504,
-      237.87
+      -50.884,
+      -542.785,
+      254.087
     ],
     "graspable": true,
-    "gripper": 0.0123,
-    "yaw": 65.98,
+    "gripper": 0.0125,
+    "yaw": -155.61,
     "occlusions": []
   },
   {
     "id": 3,
-    "class": "lemon",
+    "class": "banana",
     "coord_3d": [
-      5.309,
-      -633.237,
+      74.17,
+      -557.598,
       225.0
     ],
     "graspable": true,
-    "gripper": 0.0073,
-    "yaw": 77.6,
+    "gripper": 0.0131,
+    "yaw": -162.86,
+    "occlusions": [
+      {
+        "by_id": 5,
+        "by_class": "greenlemon",
+        "type": "depth"
+      }
+    ]
+  },
+  {
+    "id": 4,
+    "class": "carrot",
+    "coord_3d": [
+      -30.032,
+      -370.393,
+      225.0
+    ],
+    "graspable": true,
+    "gripper": 0.0066,
+    "yaw": 174.7,
     "occlusions": []
   },
   {
-    "id": 6,
-    "class": "carrot",
+    "id": 5,
+    "class": "greenlemon",
     "coord_3d": [
-      79.852,
-      -499.713,
-      358.105
+      43.725,
+      -523.685,
+      225.0
     ],
     "graspable": true,
-    "gripper": 0.0086,
-    "yaw": 104.76,
-    "occlusions": []
+    "gripper": 0.0074,
+    "yaw": 156.21,
+    "occlusions": [
+      {
+        "by_id": 2,
+        "by_class": "corn",
+        "type": "proximity"
+      }
+    ]
   }
 ]

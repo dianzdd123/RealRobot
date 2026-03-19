@@ -1,10 +1,39 @@
 .env
+.vscode/
+.idea/
+
+# === 模型权重与大文件 (Models & Large Weights) ===
 checkpoints/
-__pycache__/
-utils/__pycache__/
-*.pyc
 *.pt
-*.txt
-*.json
-__pycache__/
+
+# === Python 编译缓存 (Python Bytecode) ===
+**/__pycache__/
 *.pyc
+*.pyo
+*.pyd
+
+# === 运行时生成的临时数据 (Runtime Data) ===
+# 屏蔽所有 json, txt, npz
+*.json
+*.txt
+*.npz
+
+# 排除 requirements.txt 确保它能被提交
+!requirements.txt
+
+# === 图像文件管理 (Image Management) ===
+# 1. 默认屏蔽所有图片，防止运行生成的 _boxed.png 或 _sam2.png 污染仓库
+*.png
+*.jpg
+*.jpeg
+
+# 2. 特例：保留 test_imgs 文件夹及其内部所有图片
+!test_imgs/
+!test_imgs/*
+
+# === utils 中未使用的冗余/旧版脚本 (Unused/Legacy Utils) ===
+utils/sam.py
+utils/project.py
+utils/pose_capture.py
+utils/roborefer_test.py
+utils/rr_points.py

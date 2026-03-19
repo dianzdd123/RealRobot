@@ -66,20 +66,3 @@ print(f"       深度图像: {save_base}_depth.png")
 print(f"       数据文件: {save_base}.npz")
 
 pipeline.stop()
-
-
-# import numpy as np
-# import matplotlib.pyplot as plt
-
-# data = np.load("test_imgs/img0.npz")  # 替换成你的文件路径
-# depth = data["depth"]
-
-# valid = depth[depth > 0]
-# print("有效像素数量：", len(valid))
-# print("深度值范围：", valid.min(), "→", valid.max())
-
-# plt.hist(valid, bins=100)
-# plt.title("Depth Value Distribution")
-# plt.xlabel("Depth Value (uint16)")
-# plt.ylabel("Pixel Count")
-# plt.show()

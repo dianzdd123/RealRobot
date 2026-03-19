@@ -14,24 +14,16 @@ def save_scene_info_to_json(
     occlusion_info=None,
     graspable_flags=None
 ):
-    """
-    保存场景中每个物体的信息为 JSON 文件。
-    兼容：
-      - coords_3d 可含 None（将被跳过）
-      - occlusion_info 支持 [(j, type)] 或 [{'by_id': j, 'type': t}] 或 [{'by': j, 'type': t}]
-    """
-
-    import os, json
-    from ultralytics import YOLO
-
+    """Serializes comprehensive scene information including 3D coordinates and occlusion relations to JSON."""
     names = {}
     if yolo_path:
         try:
             names = YOLO(yolo_path).names or {}
         except Exception as e:
-            print(f"[WARN] 载入 YOLO 名称失败：{e}，将使用 id:id 映射")
+            print(f"[WARN] Failed to load YOLO names from {yolo_path}: {e}. Falling back to ID mapping.")
 
     def id_to_name(cid):
+        """Maps class ID to human-readable name."""
         try:
             if isinstance(names, dict) and isinstance(cid, int) and cid in names:
                 return str(names[cid])
@@ -40,7 +32,9 @@ def save_scene_info_to_json(
             return str(cid)
 
     N = len(class_ids)
+
     def fix_len(arr, n, fill=None):
+        """Ensures the list matches the required length by padding or trimming."""
         if arr is None:
             return [fill] * n
         arr = list(arr)
@@ -50,26 +44,24 @@ def save_scene_info_to_json(
             arr = arr[:n]
         return arr
 
-    widths       = fix_len(widths, N)
-    angles       = fix_len(angles, N)
-    quaternions  = fix_len(quaternions, N)
+    # Align all attribute lists to the number of detected objects
+    widths = fix_len(widths, N)
+    angles = fix_len(angles, N)
+    quaternions = fix_len(quaternions, N)
     graspable_flags = fix_len(graspable_flags, N, fill=True)
 
     def parse_occ_item(item):
-        if isinstance(item, (tuple, list)):
-            if len(item) >= 2:
-                return int(item[0]), str(item[1])
-            return None
+        """Parses various occlusion formats into a standard (ID, type) tuple."""
+        if isinstance(item, (tuple, list)) and len(item) >= 2:
+            return int(item[0]), str(item[1])
         if isinstance(item, dict):
             j = item.get("by_id", item.get("by", item.get("idx", item.get("id"))))
             t = item.get("type", item.get("kind", item.get("mode")))
-            if j is None or t is None:
-                return None
-            try:
-                j = int(j)
-            except:
-                return None
-            return j, str(t)
+            if j is not None and t is not None:
+                try:
+                    return int(j), str(t)
+                except:
+                    return None
         return None
 
     data = []
@@ -78,7 +70,7 @@ def save_scene_info_to_json(
 
     for i in range(N):
         if i >= len(coords_3d):
-            print(f"[WARN] coords_3d 长度不足：i={i}, len(coords_3d)={len(coords_3d)}，跳过该目标")
+            print(f"[WARN] Insufficient 3D coordinates: i={i}, skipping object.")
             continue
 
         coord = coords_3d[i]
@@ -89,7 +81,7 @@ def save_scene_info_to_json(
         try:
             x, y, z = float(coord[0]), float(coord[1]), float(coord[2])
         except Exception:
-            print(f"[WARN] 坐标格式异常，跳过 i={i}, coord={coord}")
+            print(f"[WARN] Invalid coordinate format for object {i}, skipping.")
             continue
 
         cls_id = class_ids[i]
@@ -100,29 +92,24 @@ def save_scene_info_to_json(
             "graspable": bool(graspable_flags[i])
         }
 
+        # Optional attributes
         if widths[i] is not None:
-            try:
-                entry["gripper"] = round(float(widths[i]), 4)
-            except:
-                pass
+            try: entry["gripper"] = round(float(widths[i]), 4)
+            except: pass
         if angles[i] is not None:
-            try:
-                entry["yaw"] = round(float(angles[i]), 2)
-            except:
-                pass
+            try: entry["yaw"] = round(float(angles[i]), 2)
+            except: pass
         if quaternions[i] is not None:
-            try:
-                entry["quat"] = [round(float(q), 4) for q in quaternions[i]]
-            except:
-                pass
+            try: entry["quat"] = [round(float(q), 4) for q in quaternions[i]]
+            except: pass
 
+        # Process occlusion relations
         entry["occlusions"] = []
         if isinstance(occlusion_info, dict) and i in occlusion_info:
             rels = occlusion_info[i] or []
             for it in rels:
                 parsed = parse_occ_item(it)
                 if not parsed:
-                    print(f"[WARN] 无法解析遮挡条目：obj={i}, item={it}")
                     continue
                 by_id, occ_type = parsed
                 if by_id < 0 or by_id >= N:
@@ -140,12 +127,9 @@ def save_scene_info_to_json(
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-    print(f"✅ 场景信息及遮挡关系已保存到: {output_path}")
+    print(f"[INFO] Scene information saved to: {output_path}")
     if skipped_none:
-        print(f"[INFO] 已跳过 {skipped_none} 个 None 坐标目标（未写入 JSON）")
-    if out_of_range_occ:
-        print(f"[INFO] 有 {out_of_range_occ} 条遮挡关系的 by_id 越界被忽略")
-
+        print(f"[INFO] Skipped {skipped_none} objects due to missing 3D coordinates.")
 
 def save_json_from_detection(
     class_ids,
@@ -157,23 +141,9 @@ def save_json_from_detection(
     gripper_opens=None,
     gripper_closes=None,
     quaternions=None,
-    angles=None  # 新增角度
+    angles=None
 ):
-    """
-    通用 JSON 保存函数，兼容 YOLO/SAM 自动分割 + Grasp 信息
-
-    参数:
-        class_ids (List[int])
-        centers (List[Tuple[int, int]])：2D 中心点坐标
-        coords_3d (List[Tuple[float, float, float]])
-        output_path (str)
-        yolo_path (str, optional)
-        class_names (Dict[int, str], optional)
-        widths (List[float], optional): 抓取宽度（米）
-        quaternions (List[List[float]], optional): 四元数姿态
-        angles (List[float], optional): 抓取角度（deg）
-    """
-    # 1. 加载类别名映射
+    """Saves detection and basic grasp data to a JSON file for baseline pipelines."""
     if class_names is not None:
         names = class_names
     elif yolo_path is not None:
@@ -181,54 +151,27 @@ def save_json_from_detection(
     else:
         names = {}
 
-    assert len(class_ids) == len(centers) == len(coords_3d)
-
     data = []
     for i, (cls_id, center, coord) in enumerate(zip(class_ids, centers, coords_3d)):
         if coord is None:
             continue
 
         label = names.get(int(cls_id), f"id:{int(cls_id)}")
-
         entry = {
             "class": label,
-            # "center": [int(center[0]), int(center[1])],
             "coord_3d": [round(float(coord[0]), 3), round(float(coord[1]), 3), round(float(coord[2]), 3)]
         }
 
         if gripper_opens and gripper_closes:
             entry["gripper_open"] = int(gripper_opens[i])
             entry["gripper_close"] = int(gripper_closes[i])
-
         if quaternions:
             entry["quat"] = [round(q, 4) for q in quaternions[i]]
-
         if angles:
             entry["yaw"] = round(angles[i], 2)
 
         data.append(entry)
 
-
-        # 打印输出
-        print(f"{entry['class']} @ {entry['coord_3d']}", end="")
-        if "grasp_width" in entry:
-            print(f", width={entry['grasp_width']}", end="")
-        if "grasp_angle_deg" in entry:
-            print(f", angle={entry['grasp_angle_deg']}", end="")
-        if "grasp_quaternion" in entry:
-            print(f", quat={entry['grasp_quaternion']}", end="")
-        print()
-
     with open(output_path, "w") as f:
         json.dump(data, f, indent=2)
-
-    print(f"\n Save successful: {output_path}")
-
-if __name__ == "__main__":
-    # 示例调用
-    save_scene_info_to_json(
-        yolo_path="checkpoints/best_yolo.pt",
-        class_ids=[0, 1],
-        coords_3d=[[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]],
-        output_path="output.json"
-    )
+    print(f"[INFO] Detection JSON saved to: {output_path}")

@@ -9,10 +9,12 @@ from .sam2_utils import segment_with_sam2
 from .affordance_area import compute_affordance_mask, draw_affordance_on_image
 from .rotate import infer_grasp_angle_and_width
 
-MIN_AFFORDANCE_PIXELS = 150  # 小于该面积的区域标记为不可直接抓取
-DEPTH_DIFF_THRESHOLD = 10    # 深度遮挡判定阈值（mm）
+# Configuration Constants
+MIN_AFFORDANCE_PIXELS = 150  # Areas smaller than this are marked as non-graspable
+DEPTH_DIFF_THRESHOLD = 10    # Threshold for depth-based occlusion (mm)
 
 def robust_center_depth(depth_image, cx, cy, win=5):
+    """Retrieves the median depth value from a local window for stability."""
     h, w = depth_image.shape
     cx = int(round(cx)); cy = int(round(cy))
     if not (0 <= cx < w and 0 <= cy < h):
@@ -21,72 +23,13 @@ def robust_center_depth(depth_image, cx, cy, win=5):
     y0, y1 = max(cy - win, 0), min(cy + win + 1, h)
     patch = depth_image[y0:y1, x0:x1].astype(np.uint16)
     vals = patch[patch > 0]
-    if vals.size == 0:
-        return None
-    return int(np.median(vals))
-'''
-def check_depth_occlusion(depth_image, mask, center, all_masks, self_mask_index,
-                          class_ids, class_names, debug=False,
-                          depth_diff_threshold=10):
-    """
-    判断当前物体 mask 是否被其他物体遮挡（深度遮挡判断）
-    """
-    h, w = depth_image.shape
-    x, y = center
-    if not (0 <= x < w and 0 <= y < h):
-        return False, None
+    return int(np.median(vals)) if vals.size > 0 else None
 
-    center_depth = robust_center_depth(depth_image, x, y, win=5)
-    if center_depth is None:
-        return False, None
-
-    # 提取当前物体边界点
-    contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not contours or len(contours[0]) == 0:
-        return False, None
-
-    boundary_points = contours[0][:, 0, :]  # (N, 2)
-
-    for pt in boundary_points:
-        px, py = pt
-        if not (0 <= px < w and 0 <= py < h):
-            continue
-
-        # 检查该边界点是否与其他物体 mask 重叠
-        for j, other_mask in enumerate(all_masks):
-            if j == self_mask_index:
-                continue
-
-            if other_mask[py, px] > 0:  # 重叠了
-                bd = robust_center_depth(depth_image, px, py, win=3)
-                if bd is None:
-                    continue
-                depth_diff = center_depth - bd
-                if depth_diff > depth_diff_threshold:
-                    if debug:
-                        name_i = class_names[class_ids[self_mask_index]]
-                        name_j = class_names[class_ids[j]]
-                        print(f"[Depth Occlusion] Object {self_mask_index} ({name_i}) is occluded by object {j} ({name_j})")
-                        print(f" - Boundary point: ({px}, {py}), center depth: {center_depth}, boundary depth: {bd}, Δ={depth_diff:.1f}")
-                    return True, ((x, y), (px, py))
-
-    if debug:
-        name_i = class_names[class_ids[self_mask_index]]
-        print(f"[Depth Check] Object {self_mask_index} ({name_i}) → no depth occlusion found.")
-
-    return False, None
-'''
 def check_occlusion(depth_image, mask, affordance_mask, center,
                     all_masks=None, all_affordance_masks=None,
                     depth_diff_threshold=10, debug=False,
                     class_ids=None, class_names=None, self_idx=None):
-    """
-    返回:
-      ok: bool
-      occluder_idx: int or None
-      occ_type: 'depth' 或 'proximity' 或 None
-      contact_pair: ((cx,cy),(px,py)) 或 None
-    """
+    """Detects both depth-edge and proximity-based occlusions for a target object."""
     x, y = center
     h, w = depth_image.shape
     if not (0 <= x < w and 0 <= y < h):
@@ -96,7 +39,7 @@ def check_occlusion(depth_image, mask, affordance_mask, center,
     if center_depth is None:
         return False, None, None, None
 
-    # 1) 深度遮挡：你的边界比中心更近，且邻域属于别的物体
+    # 1) Depth Occlusion: Check if boundary is significantly closer than center
     contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if contours:
         boundary_points = contours[0][:, 0, :]
@@ -120,16 +63,15 @@ def check_occlusion(depth_image, mask, affordance_mask, center,
                             if 0 <= nx < w and 0 <= ny < h and other_mask[ny, nx] > 0:
                                 hit = True
                                 break
-                        if hit:
-                            break
+                        if hit: break
                     if hit:
                         if debug:
                             name_i = class_names[class_ids[self_idx]]
                             name_j = class_names[class_ids[j]]
-                            print(f"[Depth Occlusion] {self_idx} ({name_i}) ← {j} ({name_j})")
+                            print(f"[DEBUG] Depth Occlusion: {self_idx}({name_i}) occluded by {j}({name_j})")
                         return True, j, 'depth', ((x, y), (px, py))
 
-    # 2) 靠近遮挡：affordance 区与他者 mask 有交叠，且对方不更远
+    # 2) Proximity Occlusion: Check if affordance region overlaps with closer objects
     if all_masks is not None and all_affordance_masks is not None:
         aff_mask_bin = affordance_mask.astype(np.uint8)
 
@@ -141,7 +83,7 @@ def check_occlusion(depth_image, mask, affordance_mask, center,
             if np.count_nonzero(overlap) == 0:
                 continue
 
-            # 采样计算两侧近端深度
+            # Sample depths to compare relative distances
             aff_coords = np.column_stack(np.nonzero(aff_mask_bin))
             other_coords = np.column_stack(np.nonzero(other_mask))
             if aff_coords.size == 0 or other_coords.size == 0:
@@ -164,32 +106,32 @@ def check_occlusion(depth_image, mask, affordance_mask, center,
                 if debug:
                     name_i = class_names[class_ids[self_idx]]
                     name_j = class_names[class_ids[j]]
-                    print(f"[Proximity Occlusion] {self_idx} ({name_i}) ← {j} ({name_j})")
+                    print(f"[DEBUG] Proximity Occlusion: {self_idx}({name_i}) blocked by {j}({name_j})")
                 return True, j, 'proximity', None
 
     return False, None, None, None
 
 def draw_mask_boundaries(image, masks, color=(0, 255, 0), thickness=2, ids=None, line_pairs=None):
-        vis_image = image.copy()
-        for idx, mask in enumerate(masks):
-            contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            if not contours:
-                continue
-            cv2.drawContours(vis_image, contours, -1, color, thickness)
-            if ids is not None:
-                M = cv2.moments(contours[0])
-                if M['m00'] != 0:
-                    cx = int(M['m10'] / M['m00'])
-                    cy = int(M['m01'] / M['m00'])
-                    cv2.putText(vis_image, str(ids[idx]), (cx, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+    """Draws mask contours and label markers for occlusion visualization."""
+    vis_image = image.copy()
+    for idx, mask in enumerate(masks):
+        contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            continue
+        cv2.drawContours(vis_image, contours, -1, color, thickness)
+        if ids is not None:
+            M = cv2.moments(contours[0])
+            if M['m00'] != 0:
+                cx, cy = int(M['m10'] / M['m00']), int(M['m01'] / M['m00'])
+                cv2.putText(vis_image, str(ids[idx]), (cx, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
-        # 添加红色连接线
-        if line_pairs:
-            for pt1, pt2 in line_pairs:
-                cv2.line(vis_image, pt1, pt2, (0, 0, 255), 2)
-        return vis_image
+    if line_pairs:
+        for pt1, pt2 in line_pairs:
+            cv2.line(vis_image, pt1, pt2, (0, 0, 255), 2)
+    return vis_image
 
 def compute_grasp_difficulty(masks, affordance_masks):
+    """Calculates graspability flags and difficulty scores based on affordance pixel ratio."""
     graspable_flags, grasp_difficulties = [], []
     for m, aff in zip(masks, affordance_masks):
         aff_pixels = np.count_nonzero(aff)
@@ -203,105 +145,49 @@ def compute_grasp_difficulty(masks, affordance_masks):
     return graspable_flags, grasp_difficulties
 
 def save_occlusion_info(occlusion_info, class_ids, class_names, output_path):
-    """
-    occlusion_info: { idx: [ (j, occ_type), (j, occ_type, extra), {'by': j, 'type': 'depth'}, ... ] }
-    class_ids: list/tuple 或 dict
-    class_names: list/tuple 或 dict
-    """
-
+    """Maps numerical occlusion relationships to human-readable labels and saves to JSON."""
     def id_to_name(target):
-        # 目标索引/类别id/类别名 -> 类别名
         if isinstance(target, int):
-            if isinstance(class_ids, (list, tuple)):
-                cid = class_ids[target] if 0 <= target < len(class_ids) else target
-            elif isinstance(class_ids, dict):
-                cid = class_ids.get(target, target)
-            else:
-                cid = target
+            cid = class_ids[target] if isinstance(class_ids, (list, tuple)) and 0 <= target < len(class_ids) else target
+            if isinstance(class_ids, dict): cid = class_ids.get(target, target)
         else:
-            if isinstance(class_ids, dict) and target in class_ids:
-                cid = class_ids[target]
-            else:
-                cid = target
+            cid = class_ids.get(target, target) if isinstance(class_ids, dict) else target
 
-        if isinstance(class_names, dict):
-            return str(class_names.get(cid, cid))
-        elif isinstance(class_names, (list, tuple)):
-            if isinstance(cid, int) and 0 <= cid < len(class_names):
-                return str(class_names[cid])
-            else:
-                return str(cid)
-        else:
-            return str(cid)
+        if isinstance(class_names, dict): return str(class_names.get(cid, cid))
+        if isinstance(class_names, (list, tuple)) and isinstance(cid, int) and 0 <= cid < len(class_names):
+            return str(class_names[cid])
+        return str(cid)
 
     def parse_relation(rel):
-        """
-        将 relation 规范化为 (j, occ_type)；无法解析时返回 None
-        支持:
-          - (j, occ_type) / [j, occ_type]
-          - (j, occ_type, extra...) 取前两个
-          - {'by': j, 'type': t} 或 {'j': j, 'kind': t} 等
-        """
-        # tuple/list
-        if isinstance(rel, (tuple, list)):
-            if len(rel) >= 2:
-                j, occ_type = rel[0], rel[1]
-                return j, str(occ_type)
-            else:
-                print(f"[WARN] relation length < 2, skipped: {rel}")
-                return None
-
-        # dict
+        if isinstance(rel, (tuple, list)) and len(rel) >= 2:
+            return rel[0], str(rel[1])
         if isinstance(rel, dict):
-            j = rel.get('by')
-            if j is None:
-                j = rel.get('j', rel.get('idx', rel.get('id')))
-            occ_type = rel.get('type', rel.get('kind', rel.get('mode')))
-            if j is None or occ_type is None:
-                print(f"[WARN] relation dict missing keys, skipped: {rel}")
-                return None
-            return j, str(occ_type)
-
-        print(f"[WARN] unknown relation entry, skipped: {rel}")
+            j = rel.get('by') or rel.get('j') or rel.get('idx')
+            occ_type = rel.get('type') or rel.get('kind')
+            if j is not None and occ_type is not None: return j, str(occ_type)
         return None
 
     occlusion_data = []
     for i, relations in occlusion_info.items():
-        obj_name = id_to_name(i)
+        if relations is None: relations = []
         occluded_by_list = []
-
-        if relations is None:
-            print(f"[WARN] relations is None for object {i}")
-            relations = []
-
         for rel in relations:
             parsed = parse_relation(rel)
-            if parsed is None:
-                continue
-            j, occ_type = parsed
-            occluded_by_list.append({
-                "by": id_to_name(j),
-                "type": occ_type
-            })
-
-        occlusion_data.append({
-            "object": obj_name,
-            "occluded_by": occluded_by_list
-        })
+            if parsed:
+                j, occ_type = parsed
+                occluded_by_list.append({"by": id_to_name(j), "type": occ_type})
+        occlusion_data.append({"object": id_to_name(i), "occluded_by": occluded_by_list})
 
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(occlusion_data, f, ensure_ascii=False, indent=2)
-
-    print(f"✅ 遮挡信息已保存: {output_path}")
+    print(f"[INFO] Occlusion information saved to: {output_path}")
 
 if __name__ == "__main__":
     yolo_model_path = "checkpoints/best_yolo.pt"
     sam2_model_path = "checkpoints/sam2_b.pt"
     path_base = "imgs/img_from_camera"
-    # path_base = "test_imgs/img4"
-    img_path = f"{path_base}.png"
-    npz_path = f"{path_base}.npz"
+    img_path, npz_path = f"{path_base}.png", f"{path_base}.npz"
 
     yolo_model = YOLO(yolo_model_path)
     class_names = yolo_model.names
@@ -313,111 +199,46 @@ if __name__ == "__main__":
     pipeline.start(config)
 
     align = rs.align(rs.stream.color)
-    # Warm up the camera
-    for _ in range(10):
-        frames = pipeline.wait_for_frames()
+    for _ in range(10): pipeline.wait_for_frames() # Warm up sensor
 
-    # Capture one aligned RGB-D frame
     frames = pipeline.wait_for_frames()
-
     aligned_frames = align.process(frames)
-    color_frame = aligned_frames.get_color_frame()
-    depth_frame = aligned_frames.get_depth_frame()
+    color_frame, depth_frame = aligned_frames.get_color_frame(), aligned_frames.get_depth_frame()
+    
     if not color_frame or not depth_frame:
-        print("[ERROR] Failed to capture frames.")
+        print("[ERROR] Failed to capture frames from RealSense.")
         exit(1)
 
-    # Convert frames to numpy arrays
     color_image = np.asanyarray(color_frame.get_data())
     depth_image = np.asanyarray(depth_frame.get_data())
-    # Save RGB and depth images
-    success = cv2.imwrite(img_path, color_image)
-    if not success:
-        print("[ERROR] RGB图像保存失败！")
-
+    cv2.imwrite(img_path, color_image)
     np.savez_compressed(npz_path, color=color_image, depth=depth_image)
     pipeline.stop()
     
-    # data = np.load(npz_path)
-    # color_image = data["color"]
-    # depth_image = data["depth"]
-
-    # if not os.path.exists(img_path):
-    #     print(f"[ERROR] 图像路径不存在: {img_path}")
-    #     exit(1)
-    # color_image = cv2.imread(img_path)
-    # data = np.load(npz_path)
-    # depth_image = data["depth"]
-
-    # 目标检测
-    image_rgb, boxes, yolo_centers, class_ids, yolo_output_path = detect_fruits(img_path, yolo_model_path)
-    mboxes, mclass_ids, mcenters, groups = merge_detections_by_depth_and_proximity(
-        boxes=boxes,
-        class_ids=class_ids,
-        centers_xy=yolo_centers,                 # 使用 YOLO 返回的中心
-        depth_image=depth_image.astype(np.uint16),
-        pixel_dist_thresh=60,
-        depth_diff_thresh=20,
-        same_class_only=True,
-        win=3
+    # Perception Pipeline
+    image_rgb, boxes, yolo_centers, class_ids, _ = detect_fruits(img_path, yolo_model_path)
+    mboxes, mclass_ids, mcenters, _ = merge_detections_by_depth_and_proximity(
+        boxes=boxes, class_ids=class_ids, centers_xy=yolo_centers,
+        depth_image=depth_image.astype(np.uint16), pixel_dist_thresh=60, depth_diff_thresh=20,
+        same_class_only=True, win=3
     )
     
-    # SAM 分割
-    masks, sam_centers, result_path = segment_with_sam2(
-        image_rgb=image_rgb,
-        boxes=mboxes,
-        sam_model_path=sam2_model_path,
-        input_image_path=img_path
-    )
-    # 计算获得 affordance area
+    masks, sam_centers, _ = segment_with_sam2(image_rgb=image_rgb, boxes=mboxes, sam_model_path=sam2_model_path, input_image_path=img_path)
+
+    # Affordance and Occlusion Analysis
     image_with_aff = image_rgb.copy()
     affordance_masks = []
     for i, m in enumerate(masks):
-        # 得到主副轴和质心
-        grasp_angle, width, _, major_axis, minor_axis = infer_grasp_angle_and_width(m, draw_on=image_rgb, object_index=i)
-
-        mean = np.array(sam_centers[i], dtype=np.float32)
-        # 基于主副轴和质心生成 affordance mask（相对原宽度固定像素外扩）
-        aff_mask = compute_affordance_mask(
-            mask=m,
-            major_axis=major_axis,
-            minor_axis=minor_axis,
-            mean=mean,
-            center_ratio=0.3,
-            expand_pixels=20
-        )
-
+        _, _, _, major_axis, minor_axis = infer_grasp_angle_and_width(m, draw_on=image_rgb, object_index=i)
+        aff_mask = compute_affordance_mask(mask=m, major_axis=major_axis, minor_axis=minor_axis, mean=np.array(sam_centers[i], dtype=np.float32), center_ratio=0.3, expand_pixels=20)
         affordance_masks.append(aff_mask)
-        # 绘制叠加
-        image_with_aff = draw_affordance_on_image(image_with_aff, aff_mask, color=(0, 255, 0), alpha=0.4)
-    # 保存叠加可视化结果
+        image_with_aff = draw_affordance_on_image(image_with_aff, aff_mask)
+
     cv2.imwrite("output_affordance_overlay.png", cv2.cvtColor(image_with_aff, cv2.COLOR_RGB2BGR))
 
-    # 遮挡检测
-    occlusion_line_pairs = []
     for idx, mask in enumerate(masks):
-        class_id = class_ids[idx]
-        class_name = class_names.get(class_id, f"class_{class_id}")
-        center = sam_centers[idx]
-
-        is_occluded, contact_pair, _, _ = check_occlusion(
-            depth_image=depth_image,
-            mask=mask,
-            affordance_mask=affordance_masks[idx],
-            center=center,
-            all_masks=masks,
-            all_affordance_masks=affordance_masks,
-            debug=True,
-            class_ids=class_ids,
-            class_names=class_names,
-            self_idx=idx
+        check_occlusion(
+            depth_image=depth_image, mask=mask, affordance_mask=affordance_masks[idx],
+            center=sam_centers[idx], all_masks=masks, all_affordance_masks=affordance_masks,
+            debug=True, class_ids=class_ids, class_names=class_names, self_idx=idx
         )
-
-
-    # vis_img = draw_mask_boundaries(
-    #     image_rgb,
-    #     masks,
-    #     ids=list(range(len(masks))),
-    #     line_pairs=occlusion_line_pairs
-    # )
-    # cv2.imwrite("imgs/occluded.png", vis_img)

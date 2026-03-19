@@ -1,0 +1,18 @@
+# --- Core Math & Utilities ---
+numpy>=1.23.0
+python-dotenv
+openai>=1.0.0
+
+# --- Computer Vision & AI ---
+opencv-python>=4.8.0
+ultralytics
+# SAM2 installation from source
+git+https://github.com/facebookresearch/segment-anything-2.git
+
+# --- Robotic & Sensor Hardware ---
+xarm-python-sdk
+pyrealsense2
+
+# --- Deep Learning Core ---
+torch>=2.0.0
+torchvision

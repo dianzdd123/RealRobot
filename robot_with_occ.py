@@ -1,3 +1,7 @@
+"""
+Advanced robotic grasping pipeline with occlusion reasoning and affordance 
+refinement for cluttered and stacked environments.
+"""
 # Import utility functions
 from utils.yolo_utils import detect_fruits, merge_detections_by_depth_and_proximity
 from utils.sam2_utils import segment_with_sam2
@@ -9,12 +13,11 @@ from utils.API import subtasks_planner, trajectory_plan_on_real
 from utils.camera_to_world import camera_to_world
 from utils.traj_execute import execute
 from utils.affordance_area import compute_affordance_mask, compute_affordance_striped_fullwidth
-from openai import OpenAI
-from dotenv import load_dotenv
-import speech_recognition as sr
+from utils.voice_hybrid import wait_for_command
 
 # Import standard libraries
 import pyrealsense2 as rs
+import sys
 import os
 import cv2
 import numpy as np
@@ -24,6 +27,7 @@ from utils.occluded import check_occlusion, save_occlusion_info, compute_grasp_d
 from ultralytics import YOLO
 
 def init_robot_and_camera(robot_ip="192.168.1.117", img_path="color.png", npz_path="frames.npz"):
+    """Initializes the xArm robot and RealSense camera to capture aligned RGB-D data."""
     # ========== Step 1: Robot Initialization ==========
     arm = XArmAPI(robot_ip)
     arm.motion_enable(enable=True)
@@ -31,7 +35,6 @@ def init_robot_and_camera(robot_ip="192.168.1.117", img_path="color.png", npz_pa
     arm.set_mode(0)      # Set to position control mode
 
     # Move robot to initial viewing position
-    # arm.set_position(x=0, y=-346, z=500, roll=180, pitch=0, yaw=0, speed=80, wait=True)
     arm.set_position(x=-70, y=-500, z=500, roll=180, pitch=0, yaw=0, speed=80, wait=True)
     arm.set_gripper_position(850, wait=True)
 
@@ -54,7 +57,7 @@ def init_robot_and_camera(robot_ip="192.168.1.117", img_path="color.png", npz_pa
     color_frame = aligned_frames.get_color_frame()
     depth_frame = aligned_frames.get_depth_frame()
     if not color_frame or not depth_frame:
-        raise RuntimeError("[ERROR] Failed to capture frames.")
+        raise RuntimeError("[ERROR] Failed to capture frames from RealSense.")
 
     # Convert frames to numpy arrays
     color_image = np.asanyarray(color_frame.get_data())
@@ -71,14 +74,23 @@ def init_robot_and_camera(robot_ip="192.168.1.117", img_path="color.png", npz_pa
     return arm, color_image, depth_image, depth_intrin
 
 def compute_initial_affordance(image_rgb, masks, sam_centers):
+    """
+    Calculates the initial grasp affordance for each detected object.
+
+    Args:
+        image_rgb (np.ndarray): The input RGB image.
+        masks (list): List of segmentation masks from SAM2.
+        sam_centers (list): List of object centers.
+
+    Returns:
+        tuple: (affordance_masks, grasp_angles, widths, major_axes, minor_axes)
+    """
     affordance_masks, grasp_angles, widths, major_axes, minor_axes = [], [], [], [], []
 
     for i, m in enumerate(masks):
-        # 提取角度 & 宽度
         angle, width, _, major_axis, minor_axis = infer_grasp_angle_and_width(
             m, draw_on=image_rgb, object_index=i
         )
-        # 计算affordance mask
         aff_mask = compute_affordance_mask(
             mask=m,
             major_axis=major_axis,
@@ -96,12 +108,10 @@ def compute_initial_affordance(image_rgb, masks, sam_centers):
     return affordance_masks, grasp_angles, widths, major_axes, minor_axes
 
 def detect_all_occlusions(depth_image, masks, affordance_masks, sam_centers, class_ids, class_names):
-    """
-    返回标准结构：{ i: [(j, occ_type), ...] }
-    """
+    """Detects occlusions between objects and returns the relationship graph."""
     occlusion_info = {i: [] for i in range(len(masks))}
     for i in range(len(masks)):
-        ok, occ_idx, occ_type, contact_pair = check_occlusion(
+        ok, occ_idx, occ_type, _ = check_occlusion(
             depth_image=depth_image,
             mask=masks[i],
             affordance_mask=affordance_masks[i],
@@ -112,15 +122,12 @@ def detect_all_occlusions(depth_image, masks, affordance_masks, sam_centers, cla
             class_names=class_names,
             self_idx=i
         )
-        # ok=True 表示被遮挡（按你原来的语义）
         if ok and occ_idx is not None and occ_idx != i:
             occlusion_info[i].append((occ_idx, occ_type))
     return occlusion_info
 
 def find_mutual_occlusions(occlusion_info):
-    """
-    在标准结构上检查互相遮挡对：A被B、B也被A
-    """
+    """Identifies pairs of objects that mutually occlude each other."""
     mutual_pairs = set()
     for i, rels in occlusion_info.items():
         for j, _t in rels:
@@ -132,6 +139,32 @@ def recompute_for_mutual_occlusions(image_rgb, depth_image, masks, sam_centers,
                                     class_ids, class_names, mutual_pairs,
                                     major_axes, minor_axes, affordance_masks,
                                     grasp_angles, widths):
+    """
+    Handles complex grasping scenarios where two objects mutually occlude each other.
+    
+    This function implements a refinement strategy for 'deadlock' occlusion cases 
+    (e.g., Object A is over Object B, but also partially under it). It utilizes 
+    a striped sampling approach to identify valid grasping regions (affordance) 
+    that are reachable despite the mutual physical constraints.
+
+    Args:
+        image_rgb (np.ndarray): Original RGB image for visualization.
+        depth_image (np.ndarray): Depth map used for height-based edge detection.
+        masks (list): Original segmentation masks for all objects.
+        sam_centers (list): Geometric centers of the objects.
+        class_ids (list): Category IDs for detected objects.
+        class_names (dict): Mapping from class IDs to human-readable names.
+        mutual_pairs (list): List of tuples containing indices of mutually occluding objects.
+        major_axes (list): Calculated major axes of object orientations.
+        minor_axes (list): Calculated minor axes of object orientations.
+        affordance_masks (list): List of graspable region masks to be updated.
+        grasp_angles (list): List of grasp orientations (in degrees) to be updated.
+        widths (list): List of gripper opening widths to be updated.
+
+    Returns:
+        tuple: (updated_affordance_masks, updated_grasp_angles, updated_widths, 
+                updated_major_axes, updated_minor_axes)
+    """
     MIN_MASK_AREA = 100
     for idx1, idx2 in mutual_pairs:
         for idx in [idx1, idx2]:
@@ -151,27 +184,14 @@ def recompute_for_mutual_occlusions(image_rgb, depth_image, masks, sam_centers,
                 stripe_bin_px=1
             )
 
-            # === 检查mask大小 ===
-            nonzero = np.count_nonzero(new_mask)
-            orig_area = np.count_nonzero(masks[idx])
-            print(f"[DEBUG] Object {idx}: 原始面积={orig_area}, 重算面积={nonzero}")
-
-            if nonzero < MIN_MASK_AREA:
-                print(f"[WARN] Object {idx} 新affordance太小({nonzero}px)，跳过更新，继续用原始mask")
+            # --- 新增错误逻辑 ---
+            if np.count_nonzero(new_mask) < MIN_MASK_AREA:
+                object_label = class_names.get(class_ids[idx], "Unknown")
+                print(f"[ERROR] Object {idx} ({object_label}): No valid graspable region found after recomputation.")
                 continue
+            # -----------------
 
-            # Step 1: 判断重算后每个物体是否可抓
-            graspable_flags, grasp_difficulties = compute_grasp_difficulty(masks, affordance_masks)
-
-            # # Step 2: 删除已变得可抓的物体对应的遮挡信息
-            # for i in range(len(masks)):
-            #     if graspable_flags[i] and i in occlusion_info:
-            #         print(f"[INFO] 物体 {i} 已可抓，移除遮挡记录")
-            #         del occlusion_info[i]
-
-            # 更新affordance mask
             affordance_masks[idx] = new_mask
-            # 更新抓取角度和宽度
             angle, width, _, major_axis, minor_axis = infer_grasp_angle_and_width(
                 new_mask, draw_on=image_rgb, object_index=idx
             )
@@ -183,6 +203,7 @@ def recompute_for_mutual_occlusions(image_rgb, depth_image, masks, sam_centers,
     return affordance_masks, grasp_angles, widths, major_axes, minor_axes
 
 def get_mask_centers(masks):
+    """Computes the geometric centers for a list of masks."""
     centers = []
     for mask in masks:
         ys, xs = np.nonzero(mask)
@@ -194,74 +215,30 @@ def get_mask_centers(masks):
             centers.append([cx, cy])
     return centers
 
-def listen_and_transcribe():
-        recognizer = sr.Recognizer()
-        mic = sr.Microphone()
-        print("🎙️  请输入语音指令（请开始说话）")
-
-        with mic as source:
-            recognizer.adjust_for_ambient_noise(source)
-            audio = recognizer.listen(source)
-
-        print("🧠  正在识别语音...")
-        try:
-            text = recognizer.recognize_google(audio, language='en-US')
-            print(f"✅  识别结果: {text}")
-            return text
-        except sr.UnknownValueError:
-            print("❌ 无法识别语音")
-            return None
-        except sr.RequestError as e:
-            print(f"❌ 请求错误: {e}")
-            return None
-        
 if __name__ == "__main__": 
-    '''
-    System Workflow:
-    1. Initialize robot and capture an RGB-D image of the desktop using RealSense
-    2. Run YOLO to detect objects and their bounding boxes
-    3. Use SAM2 to segment each object and compute grasp angle and width
-    4. Detect occlusion between objects (NEW)
-    5. Project image centers into 3D space (camera coordinates)
-    6. Transform 3D camera coordinates into world coordinates using robot pose
-    7. Save results into JSON format
-    8. Use LLM to generate trajectory plan based on the JSON and command
-    9. Execute the trajectory using the robot
-    '''
-
-    # ========== Step 0: Paths and model configuration ==========
+    # ========== Step 0: Configuration ==========
     yolo_model_path = "checkpoints/best_yolo.pt"
     sam2_model_path = "checkpoints/sam2_b.pt"
     path_base = "imgs/img_from_camera"
-    # path_base = "test_imgs/img0"
     img_path = f"{path_base}.png"
     npz_path = f"{path_base}.npz"
     json_path = f"{path_base}.json"
+    
     yolo_model = YOLO(yolo_model_path)
     class_names = yolo_model.names
 
-    # if not os.path.exists(img_path) or not os.path.exists(npz_path):
-    #     raise FileNotFoundError("缺少图像或深度文件，请检查 img_path/npz_path")
-
-    # yolo_model = YOLO(yolo_model_path)
-    # class_names = yolo_model.names  # dict: id->name
-
-    # color_image = cv2.imread(img_path)
-    # data = np.load(npz_path)
-    # depth_image = data["depth"]
-
-    # ========== Step 1: Robot Initialization and Image Capture ==========
+    # ========== Step 1: Robot & Camera Initialization ==========
     arm, image_rgb, depth_image, depth_intrin = init_robot_and_camera(img_path=img_path, npz_path=npz_path)
-    print("Robot and camera initialized successfully.")
+    print("[INFO] Robot and camera initialized successfully.")
 
-    # ========== Step 2: Object Detection with YOLO ==========
+    # ========== Step 2: Object Detection (YOLO) ==========
     image_rgb, boxes, yolo_centers, class_ids, yolo_output_path = detect_fruits(img_path, yolo_model_path)
     if len(boxes) == 0:
-        print("No objects detected by YOLO. Exit!")
-        exit()
+        print("[ERROR] No objects detected by YOLO. Exiting.")
+        sys.exit(0)
 
-    # ========== Step 2.5: Merge close detections by depth & proximity ==========
-    mboxes, mclass_ids, mcenters, groups = merge_detections_by_depth_and_proximity(
+    # ========== Step 2.5: Merging Detections ==========
+    mboxes, mclass_ids, mcenters, _ = merge_detections_by_depth_and_proximity(
         boxes=boxes,
         class_ids=class_ids,
         centers_xy=yolo_centers,
@@ -272,7 +249,7 @@ if __name__ == "__main__":
         win=3
     )
 
-    # ========== Step 3: SAM2 Segmentation ==========
+    # ========== Step 3: Segmentation (SAM2) ==========
     masks, sam_centers, _ = segment_with_sam2(
         image_rgb=image_rgb,
         boxes=mboxes,
@@ -280,47 +257,41 @@ if __name__ == "__main__":
         input_image_path=img_path
     )
 
-    # ========== Step 4. 初始affordance计算 ==========
+    # ========== Step 4: Initial Affordance Calculation ==========
     affordance_masks, grasp_angles, widths, major_axes, minor_axes = compute_initial_affordance(
         image_rgb, masks, sam_centers
     )
 
-    # ========== Step 5. 遮挡检测 ==========
+    # ========== Step 5: Occlusion Detection ==========
     occlusion_info = detect_all_occlusions(depth_image, masks, affordance_masks, sam_centers, mclass_ids, class_names)
 
-    # ========== Step 6. 互相遮挡处理 ==========
+    # ========== Step 6: Mutual Occlusion Handling ==========
     mutual_pairs = find_mutual_occlusions(occlusion_info)
     if mutual_pairs:
-        print(f"[INFO] 检测到互相遮挡物体对: {mutual_pairs}")
+        print(f"[INFO] Mutual occlusions detected: {mutual_pairs}. Refining affordance...")
         affordance_masks, grasp_angles, widths, major_axes, minor_axes = recompute_for_mutual_occlusions(
             image_rgb, depth_image, masks, sam_centers, mclass_ids, class_names,
             mutual_pairs, major_axes, minor_axes, affordance_masks, grasp_angles, widths
         )
         sam_centers = get_mask_centers(affordance_masks)
-        graspable_flags, grasp_difficulties = compute_grasp_difficulty(masks, affordance_masks)
-        # for i in range(len(masks)):
-        #     if graspable_flags[i] and i in occlusion_info:
-        #         print(f"[INFO] 物体 {i} 已可抓，移除遮挡记录")
-        #         del occlusion_info[i]
-    else:
-        graspable_flags, grasp_difficulties = compute_grasp_difficulty(masks, affordance_masks)
+    
+    graspable_flags, grasp_difficulties = compute_grasp_difficulty(masks, affordance_masks)
 
-    # ========== Step 7. 计算3D世界坐标 ==========
+    # ========== Step 7: 3D Projection & Coordinate Transformation ==========
     centers_3d = get_3d_coords_from_centers(npz_path, sam_centers, depth_intrin)
-    # [ 640x480  p[309.368 213.833]  f[608.463 606.873]  Inverse Brown Conrady [0 0 0 0 0] ]
     code, pos = arm.get_position(is_radian=False)
     tcp_pose = pos[:6]
     world_coords = []
+    
     for i, pt in enumerate(centers_3d):
         if pt is None or np.allclose(pt, [0, 0, 0]):
-            print(f"[WARN] Object {i} invalid 3D point, skipped")
+            print(f"[WARN] Object {i} has invalid 3D point, skipping.")
             world_coords.append(None)
             continue
-        camera_point_m = np.array(pt)
-        world_point = camera_to_world(camera_point_m, tcp_pose, min_z_mm=225, verbose=True)
+        world_point = camera_to_world(np.array(pt), tcp_pose, min_z_mm=225, verbose=False)
         world_coords.append(world_point.tolist())
 
-    # ========== Step 8. 保存场景JSON ==========
+    # ========== Step 8: Save Scene Info to JSON ==========
     save_scene_info_to_json(
         class_ids=mclass_ids,
         coords_3d=world_coords,
@@ -332,36 +303,35 @@ if __name__ == "__main__":
         occlusion_info=occlusion_info,
         graspable_flags=graspable_flags
     )
+    print(f"[INFO] Scene information saved to {json_path}.")
 
-    # ========== Step 7: LLM Subtasks Planning ==========
-    load_dotenv()
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    user_input = input("Enter your robot instruction: ")
-    '''
-    user_input = listen_and_transcribe()
+    # ========== Step 9: LLM Planning ==========
+    cmd = wait_for_command(timeout_sec=10)
+    if not cmd:
+        try:
+            cmd = input("Enter your robot instruction: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\n[INFO] No input received. Program terminating.")
+            sys.exit(0)
+    
+    if not cmd:
+        print("[ERROR] Empty instruction. Program terminating.")
+        sys.exit(0)
 
-    if not user_input:
-        print("语音识别失败，请手动输入指令：")
-        user_input = input("Text: ")
-    else:
-        print(f"你说的是：{user_input}")
-        confirm = input("是否确认该指令？(y/n): ")
-        if confirm.lower() != 'y':
-            user_input = input("请重新输入文本指令：")
-    '''
-    task_description = subtasks_planner(user_input)
+    print(f"[INFO] Planning subtasks for: '{cmd}'")
+    task_description = subtasks_planner(cmd)
+    
     subtasks_file = "llm_subtasks.txt"
     with open(subtasks_file, "w") as f:
         f.write(task_description)
 
-    # ========== Step 8: Execute Trajectory ==========
+    # ========== Step 10: Trajectory Execution ==========
     trajectory_json_path = "trajectory_plan.json"
     trajectory_plan_on_real(
         subtask_txt_path=subtasks_file,
         json_path=json_path,
         save_json_path=trajectory_json_path
     )
+    print("[INFO] Executing trajectory...")
     execute(trajectory_json_path, arm)
-
-
-    
+    print("[INFO] Task completed.")
