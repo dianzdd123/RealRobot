@@ -1,0 +1,16 @@
+name: Repository structure
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  structure:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate source structure and local navigation
+        run: python scripts/check_repository.py

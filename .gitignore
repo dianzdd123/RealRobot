@@ -37,3 +37,12 @@ utils/project.py
 utils/pose_capture.py
 utils/roborefer_test.py
 utils/rr_points.py
+
+# Local development artefacts and credentials
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.DS_Store
+.env.*
+!.env.example

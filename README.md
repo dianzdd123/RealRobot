@@ -1,5 +1,20 @@
 # Identity-Aware Large Language Model-Guided Structured Pipeline for Robotic Grasping in Cluttered Environments
 
+## Start here
+
+This repository is a fork of [cb20600/RealRobot](https://github.com/cb20600/RealRobot). Original authorship, citations and upstream notices are retained. Changes here apply to this fork.
+
+**Scope:** Hardware research pipeline using xArm, RGB-D perception and external language/model services.
+
+| Need | Where to start |
+|---|---|
+| Setup, file map, inputs/outputs and troubleshooting | [Reuse guide](docs/REUSE.md) |
+| Local structural validation | `python scripts/check_repository.py` (Python 3.10+) |
+| Proposed fixes and reproducibility details | [Contributing](CONTRIBUTING.md) |
+
+The structural check does not run experiments or certify hardware, model accuracy or dependency compatibility. Reuse permissions need clarification: this checkout has no repository-wide licence file.
+
+
 This repository contains the official implementation of an **Occlusion-Aware Robotic Grasping System**. By integrating **YOLOV8** and **SAM2 (Segment Anything Model 2)** for high-fidelity perception and **GPT-4o** for strategic reasoning, the system autonomously identifies, reasons about, and resolves occlusions in complex, cluttered tabletop environments.
 
 ---
