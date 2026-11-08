@@ -4,6 +4,8 @@
 
 ## Start here
 
+**Repository:** [dianzdd123/RealRobot](https://github.com/dianzdd123/RealRobot)
+
 This repository is a fork of [cb20600/RealRobot](https://github.com/cb20600/RealRobot). Original authorship, citations and upstream notices are retained. Changes here apply to this fork.
 
 **Scope:** Hardware research pipeline using xArm, RGB-D perception and external language/model services.
