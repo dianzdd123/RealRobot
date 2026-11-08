@@ -1,5 +1,7 @@
 # Identity-Aware Large Language Model-Guided Structured Pipeline for Robotic Grasping in Cluttered Environments
 
+**MSEI Lab:** [Website](https://zhangrobotics.com/msei_website/) · [Website on GitHub](https://github.com/dianzdd123/msei_website)
+
 ## Start here
 
 This repository is a fork of [cb20600/RealRobot](https://github.com/cb20600/RealRobot). Original authorship, citations and upstream notices are retained. Changes here apply to this fork.
